@@ -15,6 +15,13 @@ from datetime import UTC, datetime
 
 import cfbd
 import structlog
+from dotenv import load_dotenv
+
+# Loads CFBD_API_KEY (and any other project secrets) from a local .env file
+# if present. .env is gitignored -- the key never enters source control or
+# any committed file. Safe to call repeatedly; does not override a var
+# already set in the real environment.
+load_dotenv()
 
 logger = structlog.get_logger(__name__)
 
@@ -44,16 +51,23 @@ class CfbdClient:
         return config
 
     def fetch_games(self, season: int, week: int | None = None,
-                     season_type: str = "regular") -> list[dict]:
+                     season_type: str = "both", classification: str = "fbs") -> list[dict]:
         """Fetch games with full provenance stamping. Raises on API error
-        rather than silently returning partial/fabricated data."""
+        rather than silently returning partial/fabricated data.
+
+        `classification="fbs"` returns every game with an FBS home team,
+        including FBS-vs-FCS games (needed to flag those separately) --
+        it does NOT return FCS-vs-FCS games, which are out of scope.
+        `season_type="both"` includes postseason (bowls/CFP).
+        """
         with cfbd.ApiClient(self._configuration()) as api_client:
             api = cfbd.GamesApi(api_client)
             fetched_at = datetime.now(UTC).isoformat()
-            # cfbd's generated stubs type season_type as its SeasonType enum;
+            # cfbd's generated stubs type season_type/classification as enums;
             # the runtime client accepts the plain string values fine.
             games = api.get_games(
-                year=season, week=week, season_type=season_type  # type: ignore[arg-type]
+                year=season, week=week, season_type=season_type,  # type: ignore[arg-type]
+                classification=classification,  # type: ignore[arg-type]
             )
             logger.info("fetched_games", season=season, week=week, count=len(games))
             return [
