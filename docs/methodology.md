@@ -67,11 +67,35 @@ same discipline as the spread model. A genuine discrete scoreline
 simulation (e.g. Negative-Binomial per team, convolved for the total) is
 a real future enhancement, not implemented here.
 
+## Calibration (`src/cfb/calibration/isotonic_calibrator.py`)
+
+Walk-forward isotonic regression (`sklearn.isotonic.IsotonicRegression`),
+refit per season on an expanding window of strictly-prior seasons only.
+Below `MIN_TRAIN_GAMES` (300) prior rows, the raw probability passes
+through uncalibrated rather than fitting isotonic regression on too
+little data (isotonic regression, being non-parametric, overfits small
+samples more readily than the spread/total models' 1-D linear/EWMA fits).
+
+## Ensemble (`src/cfb/ensemble/blend.py`)
+
+Blends two probabilities on the **log-odds** scale:
+`blended = sigmoid(w * logit(model_p) + (1-w) * logit(market_p))`. The
+weight `w` is chosen by grid search (0.0 to 1.0, step 0.05) minimizing
+log loss on an expanding window of strictly-prior seasons — this is the
+project's "weights learned only via nested time-series CV" requirement.
+Below `MIN_TRAIN_GAMES` (150) prior rows (the first season a model has
+market data to blend against), falls back to an even 50/50 weight.
+
+Real result (README): the weight walk-forward-learned on Elo shrank from
+0.50 to 0.05 across 2021→2025 as it correctly detected Elo wasn't adding
+information beyond the market — the ensemble ended up statistically tied
+with market-only on log loss (beat it in 2/5 seasons), not ahead of it.
+
 ## What is not yet built
 
-The Elo engine, spread model, and total model have all been run
-end-to-end against real CFBD data (2015–2025 — see README for results).
-Still not implemented:
+The Elo engine, spread model, total model, calibration layer, and
+ensemble have all been run end-to-end against real CFBD data (2015–2025
+— see README for results). Still not implemented:
 
 - CLV vs a true closing line — CFBD's free tier gives one line snapshot
   per book per game, not full line-movement history (see README's CLV
@@ -79,13 +103,12 @@ Still not implemented:
   timestamps.
 - SP+/FPI-derived features, EPA/success-rate features, recruiting/returning
   production, transfer portal, weather/altitude/travel features — none of
-  the three models above use anything but Elo/scoring-rate state yet.
-- The stacked moneyline ensemble (logistic + GBM + Elo + market on
-  log-odds) — currently only the Elo-only, home-team-always, and
-  market-only baselines exist (`src/cfb/models/moneyline/baselines.py`),
-  now validated against real odds (README: market beats raw Elo 5/5
-  seasons on log loss, as expected pre-ensemble).
-- Isotonic/Platt calibration layer (reliability diagrams and ECE are
-  already implemented in `src/cfb/evaluation/metrics.py` and used
-  throughout the moneyline/spread/total backtests).
+  the models above use anything but Elo/scoring-rate state yet. This is
+  the most likely lever to actually close the gap to the market, since a
+  single-signal Elo model structurally can't see what injuries/weather/
+  efficiency data would show it.
+- A GBM/logistic layer in the moneyline stack (currently the "model" side
+  of the ensemble is calibrated Elo only, not the logistic + GBM + Elo
+  stack the original brief describes) — natural next step once real
+  features exist to feed it.
 - GitHub Pages site generation and the weekly refresh workflow.

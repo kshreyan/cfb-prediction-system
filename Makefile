@@ -1,4 +1,4 @@
-.PHONY: setup test leakage-test backtest market-eval spread-eval total-eval predict report deploy lint
+.PHONY: setup test leakage-test backtest market-eval ensemble-eval spread-eval total-eval predict report deploy lint
 
 VENV := .venv/bin
 
@@ -25,6 +25,9 @@ backtest:
 
 market-eval:
 	$(VENV)/python -m cfb.cli market-eval --start-season 2015 --end-season 2025
+
+ensemble-eval:
+	$(VENV)/python -m cfb.cli ensemble-eval --start-season 2015 --end-season 2025
 
 spread-eval:
 	$(VENV)/python -m cfb.cli spread-eval --start-season 2015 --end-season 2025

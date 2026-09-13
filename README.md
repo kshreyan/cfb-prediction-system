@@ -40,7 +40,8 @@ This repo is under active build-out. Honest status as of the last commit:
 | Spread model (margin distribution, skew-normal residuals) | ✅ built and backtested vs real market spreads |
 | Total model (scoreline engine, skew-normal residuals) | ✅ built and backtested vs real market totals |
 | CLV vs closing line | 🚧 not computed yet (needs true line-movement history; see caveat below) |
-| Stacked ensemble, calibration layer (isotonic/Platt) | 🚧 not started |
+| Isotonic calibration layer, log-odds ensemble (weight learned walk-forward) | ✅ built and backtested vs real market moneylines |
+| SP+/FPI, EPA, recruiting, portal, weather/travel features | 🚧 not started — every model above uses only Elo/scoring-rate state |
 | GitHub Pages site, weekly workflow | 🚧 not started |
 
 ### Real backtest results (raw Elo, no calibration layer, no market blend)
@@ -102,6 +103,41 @@ motivation, and everything else Elo doesn't see. This is the expected,
 reported-without-spin result at this stage — the target for the finished
 ensemble is to close this gap by blending with the market, not to beat it
 on Elo alone.
+
+### Ensemble: isotonic-calibrated Elo blended with the market
+
+Isotonic calibration is fit walk-forward on Elo's raw probabilities
+(strictly-prior seasons only), then blended with the market on the
+log-odds scale using a weight chosen by grid search on strictly-prior
+seasons' log loss only — never the season it's then scored on
+(`python -m cfb.cli ensemble-eval`):
+
+| Season | n | Weight on Elo | Elo raw LL | Elo calib. LL | Market LL | Ensemble LL |
+|---|---|---|---|---|---|---|
+| 2021 | 721 | 0.50 | 0.572 | 0.565 | 0.550 | **0.545** |
+| 2022 | 708 | 0.30 | 0.619 | 0.675 | 0.589 | 0.596 |
+| 2023 | 772 | 0.15 | 0.568 | 0.607 | 0.523 | 0.526 |
+| 2024 | 787 | 0.05 | 0.584 | 0.623 | 0.541 | 0.542 |
+| 2025 | 783 | 0.05 | 0.568 | 0.564 | 0.536 | **0.535** |
+
+**Ensemble beat Elo-only on log loss 5/5 seasons (expected — it contains
+the market). Ensemble beat market-only in only 2/5 seasons (2021,
+2025) — essentially statistically tied with the market, not a
+demonstrated edge.** The walk-forward weight search correctly recognized
+this in real time: the learned weight on Elo shrinks from an even 0.50 in
+its first eligible season down to 0.05 by 2024–2025, i.e. the ensemble
+learned to mostly defer to the market because Elo wasn't adding
+information — which is the walk-forward weight-learning working exactly
+as intended, not a failure of it. **Per the honesty standard, this is not
+a "beats Vegas" result and is not reported as one.**
+
+One genuine, worth-stating nuance: **ECE often improves under the
+ensemble even in seasons where log loss doesn't** (e.g. 2021: ECE 0.024
+vs. Elo's 0.046 and the market's 0.040; 2022: 0.026 vs. 0.046/0.048).
+Averaging two differently-biased predictors can improve calibration
+without improving discrimination — a known property of ensembling, not
+an edge claim; log loss (which rewards discrimination, not just
+calibration) is still the metric this project selects on.
 
 ### Spread model: real ATS backtest (the actual skill test)
 
@@ -205,13 +241,14 @@ docs/           methodology notes
 
 ```bash
 make setup        # creates .venv, installs the package + dev deps
-make test         # runs the full test suite (29 tests, all passing)
+make test         # runs the full test suite (37 tests, all passing)
 make lint         # ruff + mypy, both clean
 export CFBD_API_KEY=...  # or rely on the local .env (already configured)
-make backtest     # walk-forward Elo backtest, 2015-2025 by default
-make market-eval  # Elo vs de-vigged market moneyline, real odds
-make spread-eval  # real ATS backtest vs the market spread
-make total-eval   # real O/U backtest vs the market total
+make backtest      # walk-forward Elo backtest, 2015-2025 by default
+make market-eval   # Elo vs de-vigged market moneyline, real odds
+make ensemble-eval # calibrated Elo + market ensemble, real odds
+make spread-eval   # real ATS backtest vs the market spread
+make total-eval    # real O/U backtest vs the market total
 ```
 
 Dependencies are pinned as ranges in `pyproject.toml` and fully resolved

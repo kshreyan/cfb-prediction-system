@@ -160,6 +160,94 @@ def market_eval(start_season: int, end_season: int, refresh: bool) -> None:
     summary.to_csv("data/processed/elo_vs_market_summary.csv", index=False)
 
 
+@main.command("ensemble-eval")
+@click.option("--start-season", default=2015, show_default=True)
+@click.option("--end-season", default=2025, show_default=True)
+@click.option("--refresh/--no-refresh", default=False, help="Force re-fetch from CFBD.")
+def ensemble_eval(start_season: int, end_season: int, refresh: bool) -> None:
+    """The decisive check: does isotonic-calibrated Elo, blended with the
+    market via a walk-forward-learned log-odds weight, beat Elo-only and
+    market-only out-of-sample? Reports all three side by side."""
+    import pandas as pd
+
+    from cfb.calibration.isotonic_calibrator import walk_forward_isotonic_calibrate
+    from cfb.data.cache import fetch_lines_for_seasons
+    from cfb.data.lines_loader import consensus_closing_lines, parse_lines
+    from cfb.ensemble.blend import walk_forward_ensemble
+    from cfb.evaluation.metrics import (
+        accuracy,
+        brier_score,
+        expected_calibration_error,
+        log_loss,
+    )
+
+    client = _get_client()
+    seasons = list(range(start_season, end_season + 1))
+
+    elo_df = _run_elo_backtest(client, seasons, refresh)
+    fbs_df = elo_df[elo_df["is_fbs_vs_fbs"]].copy()
+
+    click.echo("Fitting walk-forward isotonic calibration on raw Elo (FBS-only)...")
+    fbs_df["home_won_int"] = fbs_df["home_won"].astype(int)
+    fbs_df["elo_calibrated_prob"] = walk_forward_isotonic_calibrate(
+        fbs_df, "home_win_prob", "home_won_int"
+    )
+
+    click.echo(f"Fetching betting lines for seasons {seasons[0]}-{seasons[-1]} from CFBD...")
+    raw_lines = fetch_lines_for_seasons(client, seasons, force_refresh=refresh)
+    consensus = consensus_closing_lines(parse_lines(raw_lines))
+
+    merged = fbs_df.merge(
+        consensus[["game_id", "market_home_win_prob", "n_books_ml"]], on="game_id", how="inner"
+    )
+    has_ml = merged[merged["n_books_ml"] > 0].copy()
+    click.echo(f"\n{len(has_ml)} FBS-vs-FBS games have Elo + a real posted moneyline.")
+
+    click.echo("Learning walk-forward ensemble weight (calibrated Elo <-> market)...")
+    has_ml = walk_forward_ensemble(
+        has_ml, "elo_calibrated_prob", "market_home_win_prob", "home_won_int"
+    )
+
+    rows = []
+    for season, group in has_ml.groupby("season"):
+        y = group["home_won_int"].to_numpy()
+        preds = {
+            "elo_raw": group["home_win_prob"].to_numpy(),
+            "elo_calibrated": group["elo_calibrated_prob"].to_numpy(),
+            "market": group["market_home_win_prob"].to_numpy(),
+            "ensemble": group["ensemble_prob"].to_numpy(),
+        }
+        row = {"season": season, "n_games": len(group),
+               "ensemble_weight_on_elo": group["ensemble_weight_on_model"].iloc[0]}
+        for name, p in preds.items():
+            row[f"{name}_acc"] = accuracy(y, p)
+            row[f"{name}_logloss"] = log_loss(y, p)
+            row[f"{name}_brier"] = brier_score(y, p)
+            row[f"{name}_ece"] = expected_calibration_error(y, p)
+        rows.append(row)
+    summary = pd.DataFrame(rows).sort_values("season").reset_index(drop=True)
+
+    click.echo("\n=== Log loss: elo_raw vs elo_calibrated vs market vs ensemble ===")
+    click.echo(summary[["season", "n_games", "ensemble_weight_on_elo",
+                         "elo_raw_logloss", "elo_calibrated_logloss",
+                         "market_logloss", "ensemble_logloss"]].to_string(index=False))
+
+    click.echo("\n=== ECE: elo_raw vs elo_calibrated vs market vs ensemble ===")
+    click.echo(summary[["season", "elo_raw_ece", "elo_calibrated_ece",
+                         "market_ece", "ensemble_ece"]].to_string(index=False))
+
+    beats_market = (summary["ensemble_logloss"] < summary["market_logloss"]).sum()
+    beats_elo = (summary["ensemble_logloss"] < summary["elo_raw_logloss"]).sum()
+    click.echo(f"\nEnsemble beat market-only on log loss in {beats_market}/{len(summary)} seasons.")
+    click.echo(f"Ensemble beat Elo-only on log loss in {beats_elo}/{len(summary)} seasons.")
+    click.echo("Per the honesty standard: no 'beats the market' claim stands on this "
+               "alone -- multi-season CLV evidence is still required (not yet built).")
+
+    has_ml.to_csv("data/processed/ensemble_predictions.csv", index=False)
+    summary.to_csv("data/processed/ensemble_summary.csv", index=False)
+    click.echo("\nSaved: data/processed/ensemble_predictions.csv, ensemble_summary.csv")
+
+
 @main.command("spread-eval")
 @click.option("--start-season", default=2015, show_default=True)
 @click.option("--end-season", default=2025, show_default=True)
