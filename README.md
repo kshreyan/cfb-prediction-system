@@ -34,40 +34,61 @@ This repo is under active build-out. Honest status as of the last commit:
 | Conference-tier-aware, offseason-regressed Elo engine | ✅ built, unit + property tested |
 | Moneyline baselines (Elo-only, market-only, home-always) | ✅ built |
 | Calibration metrics (log loss, Brier, ECE, reliability curve) | ✅ built |
-| Walk-forward backtest harness | ✅ built, **not yet run on real games** |
-| CFBD data client | ✅ built, **not yet run — needs an API key** |
-| Real historical backtest + calibration report | ⛔ blocked on CFBD API key |
+| CFBD data client, real-data loader, season cache | ✅ built and run against live CFBD data |
+| Walk-forward Elo backtest, 2015–2025 (9,505 real FBS games) | ✅ run — see results below |
+| Betting lines (spreads/totals/ML), market baseline, CLV | 🚧 not pulled yet — no live line source connected |
 | Spread model (margin distribution), total model (scoreline engine) | 🚧 not started |
 | Stacked ensemble, calibration layer (isotonic/Platt) | 🚧 not started |
-| CLV computation, GitHub Pages site, weekly workflow | 🚧 not started |
+| GitHub Pages site, weekly workflow | 🚧 not started |
 
-**Nothing in this repo currently claims a real backtest result.** The 14
-tests that pass (`make test`) run against small hand-built synthetic game
-fixtures to prove the *engine logic* is correct (rating updates, home
-field, offseason regression, chronological/leakage safety) — they are not
-a demonstration of predictive skill. That demonstration requires real
-CFBD game/line data, which requires the API key described below.
+### Real backtest results (raw Elo, no calibration layer, no market blend)
 
-## What I need from you to proceed
+Walk-forward, leak-free, 2015–2025 regular + postseason, offseason
+regression applied at every season boundary. This is **Elo alone** — no
+SP+/EPA features, no market data, no calibration layer yet, so treat
+these as a first honest baseline, not a finished model.
 
-1. **A CFBD API key** — free, instant signup at
-   https://collegefootballdata.com/key. Once you have it:
-   ```
-   export CFBD_API_KEY=your_key_here
-   make check-cfbd
-   ```
-   Do not paste the key into chat or commit it to the repo — set it as an
-   environment variable (or a local `.env` that's already gitignored).
-2. **A GitHub repo URL** to push this to (I can help create one via `gh
-   repo create` if you'd rather I do that — just confirm).
-3. **A GitHub token** (or confirm you're authenticated via `gh auth
-   login` already) if pushing requires auth beyond what's configured
-   locally.
+| Season | Games (FBS-only) | Accuracy | Log loss | Brier | ECE |
+|---|---|---|---|---|---|
+| 2015 | 765 | 69.0% | 0.579 | 0.198 | 0.095 |
+| 2016 | 760 | 70.4% | 0.565 | 0.193 | 0.054 |
+| 2017 | 776 | 69.7% | 0.558 | 0.190 | 0.053 |
+| 2018 | 772 | 71.8% | 0.535 | 0.180 | 0.047 |
+| 2019 | 774 | 72.6% | 0.538 | 0.181 | 0.037 |
+| 2020 | 534 | 69.3% | 0.572 | 0.195 | 0.070 |
+| 2021 | 770 | 71.7% | 0.553 | 0.187 | 0.047 |
+| 2022 | 776 | 67.9% | 0.589 | 0.202 | 0.043 |
+| 2023 | 792 | 69.9% | 0.557 | 0.189 | 0.045 |
+| 2024 | 798 | 67.3% | 0.577 | 0.198 | 0.059 |
+| 2025 | 808 | 72.0% | 0.553 | 0.187 | 0.047 |
 
-Once (1) arrives I'll run the real walk-forward Elo backtest across every
-available CFBD season, report real calibration numbers, and continue
-through the spread model, total model, ensemble, and deployment. (2) and
-(3) are needed for the GitHub storage and Pages deployment steps.
+**Read this correctly, per the honesty standard above:** 67–73% straight-up
+on FBS-vs-FBS games is Elo working as intended, not a headline result —
+raw Elo has no market or efficiency data yet, so this is a floor, not a
+ceiling. Including FBS-vs-FCS mismatches raises every season's accuracy by
+2–6 points (e.g. 2024: 67.3% → 70.9%) with zero added skill — exactly the
+inflation effect this project's honesty standard warns about, which is why
+FBS-only is the headline number and mismatches are reported separately.
+ECE (0.04–0.10) shows raw logistic Elo is reasonably but not perfectly
+calibrated; an isotonic/Platt layer (planned) should tighten this further.
+There is no ATS number yet because there's no spread model or market data
+connected — that's next.
+
+Reproduce with `make backtest` (or `python -m cfb.cli backtest
+--start-season 2015 --end-season 2025`); raw CFBD pulls cache to
+`data/raw/` (gitignored) and predictions/summaries write to
+`data/processed/` (also gitignored — regenerate, don't expect them in
+git).
+
+## Credentials
+
+- **CFBD API key**: stored locally in `.env` (gitignored, never committed,
+  loaded automatically via `python-dotenv`). Not stored in any synced or
+  cross-session memory — `.env` on this machine is the single source of
+  truth for it.
+- **GitHub**: repo created at https://github.com/kshreyan/cfb-prediction-system
+  (private) and connected as `origin`, using the already-authenticated
+  local `gh` CLI session.
 
 ## Repo layout
 
@@ -98,8 +119,10 @@ docs/           methodology notes
 
 ```bash
 make setup     # creates .venv, installs the package + dev deps
-make test      # runs the full test suite (14 tests, all passing)
+make test      # runs the full test suite (16 tests, all passing)
 make lint      # ruff + mypy, both clean
+export CFBD_API_KEY=...  # or rely on the local .env (already configured)
+make backtest  # real walk-forward Elo backtest, 2015-2025 by default
 ```
 
 Dependencies are pinned as ranges in `pyproject.toml` and fully resolved

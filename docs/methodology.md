@@ -34,19 +34,21 @@
 
 ## What is not yet built
 
-Per the acceptance criteria in the README, the following are designed for
-but not yet implemented, because they require real CFBD data (blocked on
-an API key) and/or come after the Elo/moneyline baseline milestone:
+The Elo engine has now been run end-to-end against real CFBD data
+(2015–2025, 9,505 completed FBS games — see README for results). Still
+not implemented:
 
+- Betting lines pull (CFBD's betting endpoint) and the market-only
+  baseline running against real odds; CLV computation depends on this.
 - SP+/FPI-derived features, EPA/success-rate features, recruiting/returning
   production, transfer portal, weather/altitude/travel features.
 - The spread model (margin distribution) and total model (bivariate-Poisson
   scoreline engine).
 - The stacked moneyline ensemble (logistic + GBM + Elo + market on
   log-odds) — currently only the Elo-only, home-team-always, and
-  market-only baselines exist (`src/cfb/models/moneyline/baselines.py`).
+  market-only (untested against real odds) baselines exist
+  (`src/cfb/models/moneyline/baselines.py`).
 - Isotonic/Platt calibration layer (reliability diagrams and ECE are
   already implemented in `src/cfb/evaluation/metrics.py` and used by the
-  Elo backtest).
-- CLV computation, GitHub Pages site generation, and the weekly refresh
-  workflow.
+  Elo backtest — raw Elo's ECE is 0.04–0.10 across seasons, see README).
+- GitHub Pages site generation and the weekly refresh workflow.
