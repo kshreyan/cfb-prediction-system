@@ -160,5 +160,189 @@ def market_eval(start_season: int, end_season: int, refresh: bool) -> None:
     summary.to_csv("data/processed/elo_vs_market_summary.csv", index=False)
 
 
+@main.command("spread-eval")
+@click.option("--start-season", default=2015, show_default=True)
+@click.option("--end-season", default=2025, show_default=True)
+@click.option("--refresh/--no-refresh", default=False, help="Force re-fetch from CFBD.")
+def spread_eval(start_season: int, end_season: int, refresh: bool) -> None:
+    """Real ATS backtest: walk-forward margin model vs the market spread,
+    on every FBS-vs-FBS game with a posted spread. This is the project's
+    real skill test, not straight-up accuracy -- see README."""
+    import numpy as np
+    import pandas as pd
+
+    from cfb.data.cache import fetch_lines_for_seasons
+    from cfb.data.lines_loader import consensus_closing_lines, parse_lines
+    from cfb.evaluation.metrics import expected_calibration_error, mean_absolute_error
+    from cfb.models.spread.margin_model import home_cover_probability, run_margin_backtest
+
+    client = _get_client()
+    seasons = list(range(start_season, end_season + 1))
+
+    elo_df = _run_elo_backtest(client, seasons, refresh)
+    click.echo("Fitting walk-forward margin model (per-season expanding window)...")
+    margin_df = run_margin_backtest(elo_df)
+
+    click.echo(f"Fetching betting lines for seasons {seasons[0]}-{seasons[-1]} from CFBD...")
+    raw_lines = fetch_lines_for_seasons(client, seasons, force_refresh=refresh)
+    consensus = consensus_closing_lines(parse_lines(raw_lines))
+
+    df = margin_df.merge(
+        consensus[["game_id", "market_spread_home", "n_books_spread"]],
+        on="game_id", how="inner",
+    )
+    df = df[df["n_books_spread"] > 0].copy()
+
+    df["home_cover_prob"] = df.apply(
+        lambda r: home_cover_probability(
+            r["predicted_margin"], r["resid_a"], r["resid_loc"], r["resid_scale"],
+            r["market_spread_home"],
+        ),
+        axis=1,
+    )
+    # ATS outcome: home covers iff actual margin beats the spread; exact
+    # equality is a push and is excluded from the win-rate denominator,
+    # matching standard ATS bookkeeping.
+    home_ats_margin = df["home_margin"] + df["market_spread_home"]
+    df["push"] = np.isclose(home_ats_margin, 0.0)
+    df["home_covered"] = home_ats_margin > 0
+    df["model_picked_home"] = df["home_cover_prob"] > 0.5
+    df["pick_correct"] = df["model_picked_home"] == df["home_covered"]
+
+    def _ats_record(data: pd.DataFrame) -> tuple[int, int, int]:
+        decided = data[~data["push"]]
+        wins = int(decided["pick_correct"].sum())
+        losses = len(decided) - wins
+        pushes = int(data["push"].sum())
+        return wins, losses, pushes
+
+    click.echo(f"\n{len(df)} FBS-vs-FBS games have a posted spread and a model prediction.")
+
+    fbs_only = df[df["is_fbs_vs_fbs"]]
+    wins, losses, pushes = _ats_record(fbs_only)
+    win_pct = wins / (wins + losses) if (wins + losses) else float("nan")
+    click.echo("\n=== Overall ATS record (FBS-only, 2015-2025) ===")
+    click.echo(f"{wins}-{losses}-{pushes}  ({win_pct:.1%} of decided picks)")
+    click.echo("Honesty check: >54% here is presumed leakage until investigated, per README.")
+
+    click.echo("\n=== ATS record by season ===")
+    rows = []
+    for season, group in fbs_only.groupby("season"):
+        w, l, p = _ats_record(group)
+        wp = w / (w + l) if (w + l) else float("nan")
+        rows.append({"season": season, "wins": w, "losses": l, "pushes": p,
+                      "win_pct": wp, "margin_mae": mean_absolute_error(
+                          group["home_margin"], group["predicted_margin"])})
+    season_summary = pd.DataFrame(rows)
+    click.echo(season_summary.to_string(index=False))
+
+    click.echo("\n=== ATS record split by favorite size (|spread| threshold 14) ===")
+    small_fav = fbs_only[fbs_only["market_spread_home"].abs() < 14]
+    big_fav = fbs_only[fbs_only["market_spread_home"].abs() >= 14]
+    for label, subset in [("|spread| < 14", small_fav), ("|spread| >= 14", big_fav)]:
+        w, l, p = _ats_record(subset)
+        wp = w / (w + l) if (w + l) else float("nan")
+        click.echo(f"{label}: {w}-{l}-{p} ({wp:.1%})")
+
+    cover_ece = expected_calibration_error(
+        fbs_only["home_covered"].astype(int).to_numpy(), fbs_only["home_cover_prob"].to_numpy()
+    )
+    click.echo(f"\nCover-probability ECE (FBS-only, all seasons pooled): {cover_ece:.4f}")
+
+    df.to_csv("data/processed/spread_backtest_predictions.csv", index=False)
+    season_summary.to_csv("data/processed/spread_backtest_by_season.csv", index=False)
+    click.echo("\nSaved: data/processed/spread_backtest_predictions.csv, "
+               "spread_backtest_by_season.csv")
+
+
+@main.command("total-eval")
+@click.option("--start-season", default=2015, show_default=True)
+@click.option("--end-season", default=2025, show_default=True)
+@click.option("--refresh/--no-refresh", default=False, help="Force re-fetch from CFBD.")
+def total_eval(start_season: int, end_season: int, refresh: bool) -> None:
+    """Real O/U backtest: walk-forward scoreline (total points) model vs
+    the market total, on every FBS-vs-FBS game with a posted total."""
+    import numpy as np
+    import pandas as pd
+
+    from cfb.data.cache import fetch_lines_for_seasons, fetch_seasons
+    from cfb.data.lines_loader import consensus_closing_lines, parse_lines
+    from cfb.data.loaders import games_from_cfbd_dicts
+    from cfb.evaluation.metrics import expected_calibration_error, mean_absolute_error
+    from cfb.models.total.scoreline_engine import (
+        fit_total_residuals,
+        over_probability,
+        run_total_backtest,
+    )
+
+    client = _get_client()
+    seasons = list(range(start_season, end_season + 1))
+
+    click.echo(f"Fetching FBS games for seasons {seasons[0]}-{seasons[-1]} from CFBD...")
+    raw_games = fetch_seasons(client, seasons, force_refresh=refresh)
+    games = games_from_cfbd_dicts(raw_games)
+    click.echo(f"{len(games)} completed FBS games loaded.")
+
+    click.echo("Running walk-forward scoreline engine + skew-normal residual fit...")
+    total_df = run_total_backtest(games)
+    total_df = fit_total_residuals(total_df)
+
+    click.echo(f"Fetching betting lines for seasons {seasons[0]}-{seasons[-1]} from CFBD...")
+    raw_lines = fetch_lines_for_seasons(client, seasons, force_refresh=refresh)
+    consensus = consensus_closing_lines(parse_lines(raw_lines))
+
+    df = total_df.merge(
+        consensus[["game_id", "market_total", "n_books_total"]], on="game_id", how="inner"
+    )
+    df = df[df["n_books_total"] > 0].copy()
+
+    df["over_prob"] = df.apply(
+        lambda r: over_probability(r["predicted_total"], r["resid_a"], r["resid_loc"],
+                                    r["resid_scale"], r["market_total"]),
+        axis=1,
+    )
+    df["push"] = np.isclose(df["actual_total"], df["market_total"])
+    df["went_over"] = df["actual_total"] > df["market_total"]
+    df["model_picked_over"] = df["over_prob"] > 0.5
+    df["pick_correct"] = df["model_picked_over"] == df["went_over"]
+
+    def _ou_record(data: pd.DataFrame) -> tuple[int, int, int]:
+        decided = data[~data["push"]]
+        wins = int(decided["pick_correct"].sum())
+        losses = len(decided) - wins
+        pushes = int(data["push"].sum())
+        return wins, losses, pushes
+
+    click.echo(f"\n{len(df)} FBS-vs-FBS games have a posted total and a model prediction.")
+
+    fbs_only = df[df["is_fbs_vs_fbs"]]
+    wins, losses, pushes = _ou_record(fbs_only)
+    win_pct = wins / (wins + losses) if (wins + losses) else float("nan")
+    click.echo("\n=== Overall O/U record (FBS-only, 2015-2025) ===")
+    click.echo(f"{wins}-{losses}-{pushes}  ({win_pct:.1%} of decided picks)")
+    click.echo("Honesty check: >54% here is presumed leakage until investigated, per README.")
+
+    click.echo("\n=== O/U record by season ===")
+    rows = []
+    for season, group in fbs_only.groupby("season"):
+        w, l, p = _ou_record(group)
+        wp = w / (w + l) if (w + l) else float("nan")
+        rows.append({"season": season, "wins": w, "losses": l, "pushes": p,
+                      "win_pct": wp, "total_mae": mean_absolute_error(
+                          group["actual_total"], group["predicted_total"])})
+    season_summary = pd.DataFrame(rows)
+    click.echo(season_summary.to_string(index=False))
+
+    ou_ece = expected_calibration_error(
+        fbs_only["went_over"].astype(int).to_numpy(), fbs_only["over_prob"].to_numpy()
+    )
+    click.echo(f"\nOver-probability ECE (FBS-only, all seasons pooled): {ou_ece:.4f}")
+
+    df.to_csv("data/processed/total_backtest_predictions.csv", index=False)
+    season_summary.to_csv("data/processed/total_backtest_by_season.csv", index=False)
+    click.echo("\nSaved: data/processed/total_backtest_predictions.csv, "
+               "total_backtest_by_season.csv")
+
+
 if __name__ == "__main__":
     main()

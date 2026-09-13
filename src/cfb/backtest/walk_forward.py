@@ -29,12 +29,16 @@ class BacktestRow:
     game_id: str
     season: int
     week: int
+    start_date: object
     home_team: str
     away_team: str
     home_rating_pre: float
     away_rating_pre: float
     home_win_prob: float
     home_won: bool
+    home_points: int
+    away_points: int
+    home_margin: int
     is_fbs_vs_fbs: bool
 
 
@@ -57,12 +61,16 @@ def run_elo_backtest(games: list[GameResult], engine: EloEngine) -> pd.DataFrame
                 game_id=pred.game_id,
                 season=pred.season,
                 week=pred.week,
+                start_date=pred.start_date,
                 home_team=pred.home_team,
                 away_team=pred.away_team,
                 home_rating_pre=pred.home_rating_pre,
                 away_rating_pre=pred.away_rating_pre,
                 home_win_prob=pred.home_win_prob,
                 home_won=game.home_won,
+                home_points=game.home_points,
+                away_points=game.away_points,
+                home_margin=game.margin,
                 is_fbs_vs_fbs=game.home_is_fbs and game.away_is_fbs,
             )
         )

@@ -36,8 +36,10 @@ This repo is under active build-out. Honest status as of the last commit:
 | Calibration metrics (log loss, Brier, ECE, reliability curve) | ✅ built |
 | CFBD data client, real-data loader, season cache | ✅ built and run against live CFBD data |
 | Walk-forward Elo backtest, 2015–2025 (9,505 real FBS games) | ✅ run — see results below |
-| Betting lines (spreads/totals/ML), market baseline, CLV | 🚧 not pulled yet — no live line source connected |
-| Spread model (margin distribution), total model (scoreline engine) | 🚧 not started |
+| Betting lines (spreads/totals/ML) pulled + market baseline | ✅ run — see results below |
+| Spread model (margin distribution, skew-normal residuals) | ✅ built and backtested vs real market spreads |
+| Total model (scoreline engine, skew-normal residuals) | ✅ built and backtested vs real market totals |
+| CLV vs closing line | 🚧 not computed yet (needs true line-movement history; see caveat below) |
 | Stacked ensemble, calibration layer (isotonic/Platt) | 🚧 not started |
 | GitHub Pages site, weekly workflow | 🚧 not started |
 
@@ -71,14 +73,98 @@ inflation effect this project's honesty standard warns about, which is why
 FBS-only is the headline number and mismatches are reported separately.
 ECE (0.04–0.10) shows raw logistic Elo is reasonably but not perfectly
 calibrated; an isotonic/Platt layer (planned) should tighten this further.
-There is no ATS number yet because there's no spread model or market data
-connected — that's next.
 
 Reproduce with `make backtest` (or `python -m cfb.cli backtest
 --start-season 2015 --end-season 2025`); raw CFBD pulls cache to
 `data/raw/` (gitignored) and predictions/summaries write to
 `data/processed/` (also gitignored — regenerate, don't expect them in
 git).
+
+### Elo vs the de-vigged market (moneyline)
+
+CFBD's moneyline coverage in this feed only starts in **2021** — earlier
+seasons have spreads/totals but essentially no posted moneyline, so this
+comparison is 2021–2025 only, on the 3,771 FBS-vs-FBS games with a real
+posted line (`python -m cfb.cli market-eval`):
+
+| Season | Games | Elo log loss | Market log loss | Elo wins? |
+|---|---|---|---|---|
+| 2021 | 721 | 0.572 | 0.550 | No |
+| 2022 | 708 | 0.619 | 0.589 | No |
+| 2023 | 772 | 0.568 | 0.523 | No |
+| 2024 | 787 | 0.584 | 0.541 | No |
+| 2025 | 783 | 0.568 | 0.536 | No |
+
+**The market beat raw Elo on log loss in 5/5 seasons.** This is exactly
+what the honesty standard predicts: a single-signal, uncalibrated Elo
+model has no business beating a market that prices in injuries, weather,
+motivation, and everything else Elo doesn't see. This is the expected,
+reported-without-spin result at this stage — the target for the finished
+ensemble is to close this gap by blending with the market, not to beat it
+on Elo alone.
+
+### Spread model: real ATS backtest (the actual skill test)
+
+Margin predicted from Elo rating differential via a walk-forward linear
+regression (refit each season on all strictly-prior seasons' games,
+skew-normal residuals for fat tails), compared against the real,
+posted consensus market spread (`python -m cfb.cli spread-eval`):
+
+**Overall ATS record, FBS-only, 2015–2025: 4,023–4,151–151 (49.2%).**
+
+| Season | Record | Win % | Margin MAE |
+|---|---|---|---|
+| 2015 | 352–403–10 | 46.6% | 15.4 |
+| 2016 | 359–385–16 | 48.3% | 14.0 |
+| 2017 | 367–390–19 | 48.5% | 13.7 |
+| 2018 | 383–376–13 | 50.5% | 13.6 |
+| 2019 | 385–378–11 | 50.5% | 13.3 |
+| 2020 | 256–268–10 | 48.9% | 13.7 |
+| 2021 | 385–374–11 | 50.7% | 13.5 |
+| 2022 | 376–387–13 | 49.3% | 13.1 |
+| 2023 | 380–397–15 | 48.9% | 13.3 |
+| 2024 | 372–409–17 | 47.6% | 13.6 |
+| 2025 | 408–384–16 | 51.5% | 12.8 |
+
+By favorite size: `|spread| < 14` → 49.0% (2,736–2,843–106); `|spread| ≥
+14` → 49.6% (1,287–1,308–45). Cover-probability ECE: 0.125 (pooled).
+
+**No season is materially above ~54% — the honesty standard's leakage
+trip-wire never fires here.** A single-feature (Elo-diff-only) margin
+model with no efficiency, injury, weather, or market-derived features
+shows **no ATS edge**, landing at or slightly below breakeven every year.
+That is the expected, legitimate result for this stage of the build, not
+a bug — see the honesty standard at the top of this README.
+
+### Total model: real O/U backtest
+
+Team scoring-rate EWMA (attack/defense blend, leak-free, offseason-
+regressed) vs. the real posted consensus total, skew-normal residuals
+(`python -m cfb.cli total-eval`):
+
+**Overall O/U record, FBS-only, 2015–2025: 4,222–4,016–87 (51.3%).**
+
+Per-season win rates range 47.6%–54.8%; two seasons (2020: 54.8%, n=529;
+2023: 54.7%, n=783) individually cross the honesty standard's 54%
+trip-wire. Investigated, not celebrated: with 11 independent seasons
+tested, 1–2 crossing p<0.05 by chance is expected under the null, both
+values are only marginally significant (binomial p≈0.01–0.03, not
+overwhelming), and there is no plausible leakage channel — the total
+prediction is generated entirely from each team's own EWMA scoring state
+and a residual distribution fit only on strictly prior seasons, with
+market data entering nowhere upstream of the final O/U comparison. The
+pooled 51.3% across all 9,132 decided games is the number that matters,
+and it shows no real edge. Over-probability ECE: 0.079 (pooled).
+
+### CLV caveat (read before trusting any future CLV number)
+
+CFBD's free-tier historical odds endpoint returns one line snapshot per
+book per game (an "opening" and a "current/latest" field), not a full
+intraday time series. For completed historical games this repo treats
+that latest snapshot as a closing-line proxy, which is the best available
+signal without a paid odds-history feed — but it is a proxy, not a true
+tick-by-tick closing line, and that limitation should travel with any CLV
+number this project ever reports.
 
 ## Credentials
 
@@ -118,11 +204,14 @@ docs/           methodology notes
 ## Setup
 
 ```bash
-make setup     # creates .venv, installs the package + dev deps
-make test      # runs the full test suite (16 tests, all passing)
-make lint      # ruff + mypy, both clean
+make setup        # creates .venv, installs the package + dev deps
+make test         # runs the full test suite (29 tests, all passing)
+make lint         # ruff + mypy, both clean
 export CFBD_API_KEY=...  # or rely on the local .env (already configured)
-make backtest  # real walk-forward Elo backtest, 2015-2025 by default
+make backtest     # walk-forward Elo backtest, 2015-2025 by default
+make market-eval  # Elo vs de-vigged market moneyline, real odds
+make spread-eval  # real ATS backtest vs the market spread
+make total-eval   # real O/U backtest vs the market total
 ```
 
 Dependencies are pinned as ranges in `pyproject.toml` and fully resolved
