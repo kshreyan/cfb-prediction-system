@@ -19,6 +19,10 @@ def games_cache_path(season: int) -> Path:
     return RAW_DIR / f"games_{season}.json"
 
 
+def lines_cache_path(season: int) -> Path:
+    return RAW_DIR / f"lines_{season}.json"
+
+
 def fetch_season_games(client: CfbdClient, season: int, force_refresh: bool = False) -> list[dict]:
     """Returns raw CFBD game dicts for one season (FBS games, both regular
     + postseason), using the local cache unless force_refresh=True or the
@@ -41,3 +45,22 @@ def fetch_seasons(client: CfbdClient, seasons: list[int], force_refresh: bool = 
     for season in seasons:
         all_games.extend(fetch_season_games(client, season, force_refresh=force_refresh))
     return all_games
+
+
+def fetch_season_lines(client: CfbdClient, season: int, force_refresh: bool = False) -> list[dict]:
+    path = lines_cache_path(season)
+    if path.exists() and not force_refresh:
+        return json.loads(path.read_text())
+
+    lines = client.fetch_lines(season=season, season_type="both")
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(lines, indent=2, default=str))
+    return lines
+
+
+def fetch_lines_for_seasons(client: CfbdClient, seasons: list[int],
+                             force_refresh: bool = False) -> list[dict]:
+    all_lines: list[dict] = []
+    for season in seasons:
+        all_lines.extend(fetch_season_lines(client, season, force_refresh=force_refresh))
+    return all_lines

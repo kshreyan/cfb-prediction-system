@@ -82,7 +82,7 @@ class CfbdClient:
             ]
 
     def fetch_lines(self, season: int, week: int | None = None,
-                     season_type: str = "regular") -> list[dict]:
+                     season_type: str = "both") -> list[dict]:
         """Fetch betting lines. A game with no posted line comes back with
         no lines entry at all -- callers must treat that as unavailable,
         not as a missing-value-to-impute."""
