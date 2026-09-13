@@ -15,6 +15,23 @@ MIN_TRAIN_GAMES = 300  # isotonic regression needs more data than a 1-D
                         # linear fit to avoid overfitting to training noise
 
 
+def fit_calibrator_for_season(df: pd.DataFrame, prob_col: str, outcome_col: str,
+                               target_season: int, season_col: str = "season"
+                               ) -> IsotonicRegression | None:
+    """Fits an isotonic calibrator for `target_season` using only
+    strictly-prior-season rows. Returns None if there isn't enough prior
+    data yet (caller should pass raw probabilities through unchanged in
+    that case) -- shared by the backtest loop below and by the live
+    weekly-prediction pipeline, same reasoning as the spread/total
+    models' fit_season_params helpers."""
+    train = df[df[season_col] < target_season]
+    if len(train) < MIN_TRAIN_GAMES:
+        return None
+    iso = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+    iso.fit(train[prob_col].to_numpy(dtype=float), train[outcome_col].to_numpy(dtype=float))
+    return iso
+
+
 def walk_forward_isotonic_calibrate(df: pd.DataFrame, prob_col: str, outcome_col: str,
                                      season_col: str = "season") -> np.ndarray:
     """Returns an array aligned to df's index: the isotonic-calibrated
@@ -26,15 +43,10 @@ def walk_forward_isotonic_calibrate(df: pd.DataFrame, prob_col: str, outcome_col
     calibrated = df[prob_col].to_numpy(dtype=float).copy()
 
     for season in sorted(df[season_col].unique()):
-        train = df[df[season_col] < season]
-        test_idx = df.index[df[season_col] == season]
-
-        if len(train) < MIN_TRAIN_GAMES:
+        iso = fit_calibrator_for_season(df, prob_col, outcome_col, season, season_col)
+        if iso is None:
             continue  # leave raw probability in place for this season
-
-        iso = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
-        iso.fit(train[prob_col].to_numpy(dtype=float),
-                train[outcome_col].to_numpy(dtype=float))
+        test_idx = df.index[df[season_col] == season]
         test_probs = df.loc[test_idx, prob_col].to_numpy(dtype=float)
         calibrated[df.index.get_indexer(test_idx)] = iso.predict(test_probs)
 

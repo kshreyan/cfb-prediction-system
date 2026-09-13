@@ -92,6 +92,30 @@ class ScorelineEngine:
 
         return predicted_home, predicted_away
 
+    def predict_only(self, home_team: str, away_team: str) -> tuple[float, float]:
+        """Read-only prediction for a game that hasn't been played yet --
+        does NOT register the team or mutate any state, unlike
+        process_game(). Unregistered teams fall back to league-average
+        EWMA state (the same default a brand-new TeamScoreState gets)."""
+        home = self.teams.get(home_team, TeamScoreState())
+        away = self.teams.get(away_team, TeamScoreState())
+        predicted_home = 0.5 * (home.points_scored_ewma + away.points_allowed_ewma) + HOME_FIELD_POINTS
+        predicted_away = 0.5 * (away.points_scored_ewma + home.points_allowed_ewma)
+        return predicted_home, predicted_away
+
+
+def build_scoreline_engine(games: list[GameResult]) -> ScorelineEngine:
+    """Replays chronologically-sorted completed games through a fresh
+    engine and returns it -- used both to produce backtest rows
+    (run_total_backtest, below) and, by the live weekly-prediction
+    pipeline, to get the engine's current state for predicting games
+    that haven't been played yet."""
+    ordered = sorted(games, key=lambda g: (g.start_date, g.season, g.week, g.game_id))
+    engine = ScorelineEngine()
+    for g in ordered:
+        engine.process_game(g)
+    return engine
+
 
 def run_total_backtest(games: list[GameResult]) -> pd.DataFrame:
     """Runs the scoreline engine walk-forward over chronologically-sorted
@@ -118,6 +142,20 @@ def run_total_backtest(games: list[GameResult]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def fit_total_residual_params(df: pd.DataFrame, target_season: int) -> dict[str, float]:
+    """Fits skew-normal residual params for `target_season` using only
+    strictly-prior-season rows -- shared by the backtest loop and the
+    live weekly-prediction pipeline (see margin_model.fit_season_params
+    for why that sharing matters)."""
+    train = df[df["season"] < target_season]
+    if len(train) >= MIN_TRAIN_GAMES:
+        residuals = (train["actual_total"] - train["predicted_total"]).to_numpy()
+        a, loc, scale = stats.skewnorm.fit(residuals)
+    else:
+        a, loc, scale = FALLBACK_RESID
+    return {"resid_a": a, "resid_loc": loc, "resid_scale": scale, "n_train": len(train)}
+
+
 def fit_total_residuals(total_df: pd.DataFrame) -> pd.DataFrame:
     """Walk-forward skew-normal fit of (actual_total - predicted_total)
     residuals, refit once per season boundary on strictly-prior seasons
@@ -129,18 +167,11 @@ def fit_total_residuals(total_df: pd.DataFrame) -> pd.DataFrame:
     resid_scale = np.full(n, np.nan)
 
     for season in sorted(df["season"].unique()):
-        train = df[df["season"] < season]
+        params = fit_total_residual_params(df, season)
         test_idx = df.index[df["season"] == season]
-
-        if len(train) >= MIN_TRAIN_GAMES:
-            residuals = (train["actual_total"] - train["predicted_total"]).to_numpy()
-            a, loc, scale = stats.skewnorm.fit(residuals)
-        else:
-            a, loc, scale = FALLBACK_RESID
-
-        resid_a[test_idx] = a
-        resid_loc[test_idx] = loc
-        resid_scale[test_idx] = scale
+        resid_a[test_idx] = params["resid_a"]
+        resid_loc[test_idx] = params["resid_loc"]
+        resid_scale[test_idx] = params["resid_scale"]
 
     df["resid_a"] = resid_a
     df["resid_loc"] = resid_loc

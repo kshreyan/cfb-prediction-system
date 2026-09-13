@@ -516,5 +516,58 @@ def total_eval(start_season: int, end_season: int, refresh: bool) -> None:
                "total_backtest_by_season.csv")
 
 
+@main.command("predict")
+@click.option("--season", default=None, type=int, help="Defaults to the current season.")
+@click.option("--week", default=None, type=int, help="Defaults to the next upcoming week.")
+@click.option("--history-start-season", default=2015, show_default=True)
+@click.option("--refresh/--no-refresh", default=True, show_default=True,
+              help="Refresh currently-in-progress seasons from CFBD (default on, since "
+                   "predictions are only useful if ratings reflect the latest results).")
+def predict(season: int | None, week: int | None, history_start_season: int,
+            refresh: bool) -> None:
+    """Generate an immutable prediction snapshot for a week's not-yet-
+    played FBS games: win probability (raw + calibrated), predicted
+    margin/total with cover/over probabilities, market lines, edge vs
+    market, and data-quality flags. Writes a new timestamped file --
+    never overwrites a previous snapshot."""
+    import datetime as dt
+
+    from cfb.reporting.weekly_predictions import (
+        generate_weekly_predictions,
+        save_prediction_snapshot,
+    )
+
+    _get_client()  # fail fast with a clear message if CFBD_API_KEY is missing
+    target_season = season or dt.datetime.now(dt.UTC).year
+
+    click.echo(f"Generating predictions for season {target_season}"
+               f"{f', week {week}' if week else ' (auto-detecting next upcoming week)'}...")
+    payload = generate_weekly_predictions(
+        season=target_season, week=week, history_start_season=history_start_season,
+        refresh=refresh,
+    )
+    path = save_prediction_snapshot(payload)
+
+    click.echo(f"\n{payload['n_games']} upcoming games, season {payload['season']} "
+               f"week {payload['week']}. Calibration available: {payload['calibration_available']}")
+    for g in payload["games"]:
+        market_bits = []
+        if g["market_spread_home"] is not None:
+            market_bits.append(f"spread {g['market_spread_home']:+.1f} "
+                                f"(cover {g['home_cover_prob']:.0%})")
+        if g["market_total"] is not None:
+            market_bits.append(f"total {g['market_total']:.1f} (over {g['over_prob']:.0%})")
+        if g["market_home_win_prob"] is not None:
+            market_bits.append(f"mkt ML {g['market_home_win_prob']:.0%}")
+        market_str = " | ".join(market_bits) if market_bits else "no market line posted"
+        fbs_flag = "" if g["is_fbs_vs_fbs"] else "  [FBS-vs-FCS]"
+        prob = g["home_win_prob_calibrated"] or g["home_win_prob_raw"]
+        click.echo(f"  {g['away_team']} @ {g['home_team']}: home win {prob:.0%} | "
+                   f"pred margin {g['predicted_margin']:+.1f} | "
+                   f"pred total {g['predicted_total']:.1f} | {market_str}{fbs_flag}")
+
+    click.echo(f"\nSaved immutable snapshot: {path}")
+
+
 if __name__ == "__main__":
     main()

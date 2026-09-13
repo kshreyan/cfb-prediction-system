@@ -48,6 +48,31 @@ def _fit_ols_1d(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
     return slope, intercept
 
 
+def fit_season_params(df: pd.DataFrame, target_season: int) -> dict[str, float]:
+    """Fits (slope, intercept, skew-normal residual params) for
+    `target_season` using only strictly-prior-season rows of `df` (which
+    must already have an `elo_diff` column). Shared by the backtest loop
+    below and by the live weekly-prediction pipeline, so a future week's
+    prediction uses exactly the same walk-forward-fit parameters a
+    backtested game in that same season would have used -- no separate,
+    accidentally-different code path for "live" predictions.
+    """
+    train = df[df["season"] < target_season]
+    if len(train) >= MIN_TRAIN_GAMES:
+        slope, intercept = _fit_ols_1d(
+            train["elo_diff"].to_numpy(), train["home_margin"].to_numpy()
+        )
+        residuals = train["home_margin"].to_numpy() - (
+            slope * train["elo_diff"].to_numpy() + intercept
+        )
+        a, loc, scale = stats.skewnorm.fit(residuals)
+    else:
+        slope, intercept = FALLBACK_SLOPE, 0.0
+        a, loc, scale = FALLBACK_RESID
+    return {"slope": slope, "intercept": intercept, "resid_a": a, "resid_loc": loc,
+            "resid_scale": scale, "n_train": len(train)}
+
+
 def run_margin_backtest(elo_df: pd.DataFrame) -> pd.DataFrame:
     """Adds predicted_margin + fitted residual-distribution params to a
     copy of the Elo backtest dataframe, walk-forward by season."""
@@ -62,26 +87,13 @@ def run_margin_backtest(elo_df: pd.DataFrame) -> pd.DataFrame:
     resid_scale = np.full(n, np.nan)
 
     for season in sorted(df["season"].unique()):
-        train = df[df["season"] < season]
+        params = fit_season_params(df, season)
         test_idx = df.index[df["season"] == season]
-
-        if len(train) >= MIN_TRAIN_GAMES:
-            slope, intercept = _fit_ols_1d(
-                train["elo_diff"].to_numpy(), train["home_margin"].to_numpy()
-            )
-            residuals = train["home_margin"].to_numpy() - (
-                slope * train["elo_diff"].to_numpy() + intercept
-            )
-            a, loc, scale = stats.skewnorm.fit(residuals)
-        else:
-            slope, intercept = FALLBACK_SLOPE, 0.0
-            a, loc, scale = FALLBACK_RESID
-
         elo_diff_test = df.loc[test_idx, "elo_diff"].to_numpy()
-        predicted_margin[test_idx] = slope * elo_diff_test + intercept
-        resid_a[test_idx] = a
-        resid_loc[test_idx] = loc
-        resid_scale[test_idx] = scale
+        predicted_margin[test_idx] = params["slope"] * elo_diff_test + params["intercept"]
+        resid_a[test_idx] = params["resid_a"]
+        resid_loc[test_idx] = params["resid_loc"]
+        resid_scale[test_idx] = params["resid_scale"]
 
     df["predicted_margin"] = predicted_margin
     df["resid_a"] = resid_a

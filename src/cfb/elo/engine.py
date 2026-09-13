@@ -133,3 +133,19 @@ class EloEngine:
     def rating_of(self, team: str) -> float | None:
         state = self.teams.get(team)
         return state.rating if state else None
+
+    def predict_win_prob(self, home_team: str, home_conference: str | None, home_is_fbs: bool,
+                          away_team: str, away_conference: str | None, away_is_fbs: bool,
+                          neutral_site: bool) -> float:
+        """Read-only prediction for a game that hasn't been played yet --
+        does NOT register the team or mutate any state, unlike
+        process_game(). Falls back to the team's conference-tier prior if
+        it has no rating yet (e.g. a newly-FBS program)."""
+        home_rating = self.rating_of(home_team) or self.config.prior_for_conference(
+            home_conference, home_is_fbs
+        )
+        away_rating = self.rating_of(away_team) or self.config.prior_for_conference(
+            away_conference, away_is_fbs
+        )
+        home_field_adj = 0.0 if neutral_site else self.config.home_field_advantage
+        return self.win_probability((home_rating + home_field_adj) - away_rating)
