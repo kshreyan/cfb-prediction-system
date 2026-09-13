@@ -35,12 +35,11 @@ spread-eval:
 total-eval:
 	$(VENV)/python -m cfb.cli total-eval --start-season 2015 --end-season 2025
 
-# Not yet implemented -- planned for the ensemble/calibration + weekly-refresh milestones.
 predict:
-	$(VENV)/python -m cfb.cli predict --week current
+	$(VENV)/python -m cfb.cli predict
 
 report:
-	$(VENV)/python -m cfb.cli report --out docs/
+	$(VENV)/python -m cfb.cli report --out docs
 
 deploy: report
-	@echo "Push docs/ to gh-pages (see docs/DEPLOY.md)"
+	@echo "git add docs && git commit -m 'Rebuild site' && git push  (GitHub Pages serves docs/ on main)"

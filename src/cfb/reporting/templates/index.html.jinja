@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CFB Prediction System</title>
+<style>
+  :root {
+    --bg: #f7f8fb; --card: #ffffff; --ink: #14162b; --muted: #6b7280;
+    --accent: #2563eb; --accent-soft: #eff4ff; --border: #e5e7eb;
+    --good: #16a34a; --bad: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; }
+  header h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  header p.sub { color: var(--muted); margin: 0 0 20px; font-size: 0.95rem; }
+  .banner {
+    background: var(--accent-soft); border: 1px solid #bfdbfe; border-radius: 10px;
+    padding: 16px 18px; margin-bottom: 28px; font-size: 0.92rem;
+  }
+  .banner strong { color: var(--accent); }
+  section { margin-bottom: 40px; }
+  h2 { font-size: 1.15rem; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  .stat-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px; margin: 16px 0;
+  }
+  .stat {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .stat .label { color: var(--muted); font-size: 0.78rem; text-transform: uppercase;
+    letter-spacing: 0.03em; }
+  .stat .value { font-size: 1.4rem; font-weight: 650; margin-top: 2px; }
+  .stat .note { color: var(--muted); font-size: 0.78rem; margin-top: 2px; }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px; }
+  .charts img { width: 100%; border: 1px solid var(--border); border-radius: 10px;
+    background: white; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: 0.76rem; text-transform: uppercase; }
+  tr:hover { background: var(--accent-soft); }
+  .tag { display: inline-block; font-size: 0.7rem; padding: 2px 6px; border-radius: 5px;
+    background: #fef3c7; color: #92400e; margin-left: 6px; }
+  .na { color: var(--muted); }
+  .pos { color: var(--good); }
+  .neg { color: var(--bad); }
+  footer { color: var(--muted); font-size: 0.82rem; border-top: 1px solid var(--border);
+    padding-top: 16px; margin-top: 40px; }
+  .table-wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>CFB Prediction System</h1>
+  <p class="sub">Moneyline &middot; Spread &middot; Total &mdash; research/analytics project, not betting advice.</p>
+</header>
+
+<div class="banner">
+  <strong>Read this before the numbers below:</strong> straight-up moneyline accuracy is
+  expected to run 65&ndash;75% and is near-meaningless &mdash; most games are mismatches the
+  market already prices correctly. The real tests are <strong>ATS record</strong>,
+  <strong>CLV vs the closing line</strong>, and <strong>calibration</strong>. Any ATS/O&#8211;U
+  record materially above ~54% is presumed leakage until investigated, not celebrated.
+  This system currently shows <strong>no demonstrated edge over the market</strong> on any of
+  the three targets &mdash; that is reported here as the correct, current result, not hedged
+  away.
+</div>
+
+{% if snapshot %}
+<section>
+  <h2>Week {{ snapshot.week }}, {{ snapshot.season }} &mdash; {{ snapshot.n_games }} upcoming games</h2>
+  <p class="sub">Generated {{ snapshot.generated_at }}. Immutable snapshot &mdash; predictions are
+    never edited after publication; results are joined in separately once games are played.</p>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Matchup</th><th>Home win %</th><th>Pred. margin</th><th>Pred. total</th>
+        <th>Market spread</th><th>Cover %</th><th>Market total</th><th>Over %</th>
+        <th>Market ML</th><th>Edge (ML)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for g in snapshot.games %}
+      <tr>
+        <td>{{ g.away_team }} @ {{ g.home_team }}
+          {% if not g.is_fbs_vs_fbs %}<span class="tag">FBS&ndash;FCS</span>{% endif %}
+        </td>
+        <td>{{ "%.0f"|format((g.home_win_prob_calibrated or g.home_win_prob_raw) * 100) }}%
+          {% if not g.calibration_available %}<span class="tag">uncalibrated</span>{% endif %}
+        </td>
+        <td>{{ "%+.1f"|format(g.predicted_margin) }}</td>
+        <td>{{ "%.1f"|format(g.predicted_total) }}</td>
+        {% if g.market_spread_home is not none %}
+        <td>{{ "%+.1f"|format(g.market_spread_home) }}</td>
+        <td>{{ "%.0f"|format(g.home_cover_prob * 100) }}%</td>
+        {% else %}
+        <td class="na">&mdash;</td><td class="na">&mdash;</td>
+        {% endif %}
+        {% if g.market_total is not none %}
+        <td>{{ "%.1f"|format(g.market_total) }}</td>
+        <td>{{ "%.0f"|format(g.over_prob * 100) }}%</td>
+        {% else %}
+        <td class="na">&mdash;</td><td class="na">&mdash;</td>
+        {% endif %}
+        {% if g.market_home_win_prob is not none %}
+        <td>{{ "%.0f"|format(g.market_home_win_prob * 100) }}%</td>
+        <td class="{{ 'pos' if g.moneyline_edge_prob >= 0 else 'neg' }}">
+          {{ "%+.1f"|format(g.moneyline_edge_prob * 100) }}pp</td>
+        {% else %}
+        <td class="na">no line</td><td class="na">&mdash;</td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% else %}
+<section><h2>This week</h2><p class="na">No prediction snapshot found yet -- run <code>make predict</code>.</p></section>
+{% endif %}
+
+<section>
+  <h2>Headline credibility: does this beat the market?</h2>
+  <div class="stat-grid">
+    {% if headline.ats_record %}
+    <div class="stat"><div class="label">ATS record (FBS-only, all seasons)</div>
+      <div class="value">{{ headline.ats_record }}</div>
+      <div class="note">{{ "%.1f"|format(headline.ats_win_pct * 100) }}% of decided picks</div></div>
+    {% endif %}
+    {% if headline.ou_record %}
+    <div class="stat"><div class="label">O/U record (FBS-only, all seasons)</div>
+      <div class="value">{{ headline.ou_record }}</div>
+      <div class="note">{{ "%.1f"|format(headline.ou_win_pct * 100) }}% of decided picks</div></div>
+    {% endif %}
+    {% if headline.spread_clv_mean is defined %}
+    <div class="stat"><div class="label">Mean spread CLV</div>
+      <div class="value">{{ "%+.3f"|format(headline.spread_clv_mean) }} pts</div>
+      <div class="note">opening line vs. close</div></div>
+    {% endif %}
+    {% if headline.total_clv_mean is defined %}
+    <div class="stat"><div class="label">Mean total CLV</div>
+      <div class="value">{{ "%+.3f"|format(headline.total_clv_mean) }} pts</div>
+      <div class="note">opening line vs. close</div></div>
+    {% endif %}
+    {% if headline.ensemble_logloss is defined %}
+    <div class="stat"><div class="label">Ensemble vs. market log loss</div>
+      <div class="value">{{ "%.3f"|format(headline.ensemble_logloss) }} vs {{ "%.3f"|format(headline.market_logloss) }}</div>
+      <div class="note">{{ headline.ensemble_n_games }} games, 2021&ndash;2025</div></div>
+    {% endif %}
+    {% if headline.elo_accuracy is defined %}
+    <div class="stat"><div class="label">Raw Elo accuracy (FBS-only)</div>
+      <div class="value">{{ "%.1f"|format(headline.elo_accuracy * 100) }}%</div>
+      <div class="note">inflated by mismatches if FCS included &mdash; see banner above</div></div>
+    {% endif %}
+  </div>
+</section>
+
+<section>
+  <h2>Calibration &amp; CLV charts</h2>
+  <div class="charts">
+    {% for key, src in charts.items() %}
+    <img src="{{ src }}" alt="{{ key }}">
+    {% endfor %}
+  </div>
+</section>
+
+<footer>
+  Built from <a href="https://collegefootballdata.com">CollegeFootballData.com</a>.
+  Predictions are immutable snapshots; results are joined in separately after games complete.
+  No data is fabricated &mdash; missing lines are shown as unavailable, never imputed.
+  Source: <a href="https://github.com/kshreyan/cfb-prediction-system">github.com/kshreyan/cfb-prediction-system</a>.
+</footer>
+
+</div>
+</body>
+</html>

@@ -41,8 +41,10 @@ This repo is under active build-out. Honest status as of the last commit:
 | Total model (scoreline engine, skew-normal residuals) | ✅ built and backtested vs real market totals |
 | CLV vs closing line (spread, total) | ✅ computed from real opening/closing snapshots — see results below |
 | Isotonic calibration layer, log-odds ensemble (weight learned walk-forward) | ✅ built and backtested vs real market moneylines |
+| Live weekly predictions (immutable JSON snapshot, real upcoming games) | ✅ built and run — see "This week" below |
+| Static site (GitHub Pages, `docs/`) — predictions, calibration & CLV charts, honest ATS record | ✅ built; **Pages not yet enabled in repo settings — ask before I flip that on** |
 | SP+/FPI, EPA, recruiting, portal, weather/travel features | 🚧 not started — every model above uses only Elo/scoring-rate state |
-| GitHub Pages site, weekly workflow | 🚧 not started |
+| Scheduled weekly-refresh GitHub Actions workflow | 🚧 workflow file not yet written — needs `CFBD_API_KEY` as a repo secret, which I won't add without asking first (see Credentials) |
 
 ### Real backtest results (raw Elo, no calibration layer, no market blend)
 
@@ -236,6 +238,14 @@ project's own acceptance criteria — not a hedge.
 - **GitHub**: repo created at https://github.com/kshreyan/cfb-prediction-system
   (private) and connected as `origin`, using the already-authenticated
   local `gh` CLI session.
+- **GitHub Pages / Actions secret — deliberately not yet done**: the site
+  in `docs/` is built and committed, but I haven't enabled Pages in repo
+  settings, because on a private repo that makes this content reachable
+  at a public URL — a visibility change, not just a local file write, so
+  it's your call rather than mine to make unilaterally. Similarly, a
+  scheduled weekly-refresh GitHub Action would need `CFBD_API_KEY` added
+  as a repo secret (`.env` alone doesn't reach CI) — say the word for
+  either and I'll do it.
 
 ## Repo layout
 
@@ -274,7 +284,28 @@ make market-eval   # Elo vs de-vigged market moneyline, real odds
 make ensemble-eval # calibrated Elo + market ensemble, real odds
 make spread-eval   # real ATS backtest vs the market spread
 make total-eval    # real O/U backtest vs the market total
+make predict       # immutable prediction snapshot for the next upcoming week
+make report        # builds docs/ (site) from whatever's in data/processed/
 ```
+
+### This week (live, generated 2026-09-13)
+
+`make predict` was run against the real, live 2026 season (currently week
+3, 75 upcoming FBS games) — not a demo. Sample rows (see `docs/` after
+`make report`, or `data/processed/predictions/*.json` for the full,
+immutable snapshot):
+
+| Game | Home win % | Pred. margin | Market spread (cover %) | Market ML |
+|---|---|---|---|---|
+| Georgia @ Arkansas | 12% | −18.1 | +24.5 (64%) | 6% |
+| Florida State @ Alabama | 91% | +20.9 | −18.5 (55%) | 88% |
+| Portland State @ Oregon `[FBS–FCS]` | 100% | +46.6 | no line posted | — |
+
+The full site (`docs/index.html`) renders all 75 games plus the
+calibration reliability charts, ATS/O-U record charts, and CLV charts
+shown above — it's built and committed, but **GitHub Pages is not yet
+enabled** in the repo settings (see Credentials below for why that's a
+separate ask, not something I turned on unilaterally).
 
 Dependencies are pinned as ranges in `pyproject.toml` and fully resolved
 in `requirements-lock.txt` (generated via `pip freeze` against the exact

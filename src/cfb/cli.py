@@ -569,5 +569,19 @@ def predict(season: int | None, week: int | None, history_start_season: int,
     click.echo(f"\nSaved immutable snapshot: {path}")
 
 
+@main.command("report")
+@click.option("--out", default="docs", show_default=True)
+def report(out: str) -> None:
+    """Builds the static site (charts + tables + this week's predictions)
+    from whatever is currently in data/processed/ -- run the backtest/
+    eval/predict commands first. Does no network calls itself; purely
+    reads local CSVs/JSON and renders static HTML/PNG, per the "no live
+    browser compute" rule for the published Pages site."""
+    from cfb.reporting.site import build_site
+
+    build_site(output_dir=out)
+    click.echo(f"Site built to {out}/ (index.html + assets/ + data/).")
+
+
 if __name__ == "__main__":
     main()
