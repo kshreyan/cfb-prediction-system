@@ -21,3 +21,9 @@ data/raw/*
 data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+# Exception: prediction snapshots are the one processed output that's
+# meant to be a permanent, immutable, never-overwritten record -- each
+# timestamped file is small and IS committed, unlike everything else
+# under data/processed/ which is regenerable and gitignored.
+!data/processed/predictions/
+!data/processed/predictions/*.json

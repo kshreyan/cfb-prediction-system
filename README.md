@@ -44,7 +44,7 @@ This repo is under active build-out. Honest status as of the last commit:
 | Live weekly predictions (immutable JSON snapshot, real upcoming games) | ✅ built and run — see "This week" below |
 | Static site (GitHub Pages, `docs/`) — predictions, calibration & CLV charts, honest ATS record | ✅ built; **Pages not yet enabled in repo settings — ask before I flip that on** |
 | SP+/FPI, EPA, recruiting, portal, weather/travel features | 🚧 not started — every model above uses only Elo/scoring-rate state |
-| Scheduled weekly-refresh GitHub Actions workflow | 🚧 workflow file not yet written — needs `CFBD_API_KEY` as a repo secret, which I won't add without asking first (see Credentials) |
+| Scheduled weekly-refresh GitHub Actions workflow | ✅ workflow written (`.github/workflows/weekly-refresh.yml`), **inert until `CFBD_API_KEY` is added as a repo secret — won't add without asking first** (see Credentials) |
 
 ### Real backtest results (raw Elo, no calibration layer, no market blend)
 
