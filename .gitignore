@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/
+
+# Never commit secrets
+.env
+*.key
+
+# Raw/processed data pulled from CFBD -- large, regenerable, and some of it
+# (current-week odds) goes stale immediately. Keep the repo reproducible
+# from code + API key, not from checked-in data dumps.
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
