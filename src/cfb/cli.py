@@ -240,8 +240,9 @@ def ensemble_eval(start_season: int, end_season: int, refresh: bool) -> None:
     beats_elo = (summary["ensemble_logloss"] < summary["elo_raw_logloss"]).sum()
     click.echo(f"\nEnsemble beat market-only on log loss in {beats_market}/{len(summary)} seasons.")
     click.echo(f"Ensemble beat Elo-only on log loss in {beats_elo}/{len(summary)} seasons.")
-    click.echo("Per the honesty standard: no 'beats the market' claim stands on this "
-               "alone -- multi-season CLV evidence is still required (not yet built).")
+    click.echo("Per the honesty standard: no 'beats the market' claim stands on log loss "
+               "alone -- see `spread-eval`/`total-eval` for the real CLV backtest (moneyline "
+               "CLV itself isn't computable: CFBD's free tier has no opening moneyline field).")
 
     has_ml.to_csv("data/processed/ensemble_predictions.csv", index=False)
     summary.to_csv("data/processed/ensemble_summary.csv", index=False)
@@ -260,7 +261,12 @@ def spread_eval(start_season: int, end_season: int, refresh: bool) -> None:
     import pandas as pd
 
     from cfb.data.cache import fetch_lines_for_seasons
-    from cfb.data.lines_loader import consensus_closing_lines, parse_lines
+    from cfb.data.lines_loader import (
+        consensus_closing_lines,
+        consensus_opening_lines,
+        parse_lines,
+    )
+    from cfb.evaluation.clv import spread_clv_points
     from cfb.evaluation.metrics import expected_calibration_error, mean_absolute_error
     from cfb.models.spread.margin_model import home_cover_probability, run_margin_backtest
 
@@ -273,13 +279,19 @@ def spread_eval(start_season: int, end_season: int, refresh: bool) -> None:
 
     click.echo(f"Fetching betting lines for seasons {seasons[0]}-{seasons[-1]} from CFBD...")
     raw_lines = fetch_lines_for_seasons(client, seasons, force_refresh=refresh)
-    consensus = consensus_closing_lines(parse_lines(raw_lines))
+    line_rows = parse_lines(raw_lines)
+    consensus = consensus_closing_lines(line_rows)
+    consensus_open = consensus_opening_lines(line_rows)
 
     df = margin_df.merge(
         consensus[["game_id", "market_spread_home", "n_books_spread"]],
         on="game_id", how="inner",
     )
     df = df[df["n_books_spread"] > 0].copy()
+    df = df.merge(
+        consensus_open[["game_id", "open_spread_home", "n_books_open_spread"]],
+        on="game_id", how="left",
+    )
 
     df["home_cover_prob"] = df.apply(
         lambda r: home_cover_probability(
@@ -337,6 +349,38 @@ def spread_eval(start_season: int, end_season: int, refresh: bool) -> None:
     )
     click.echo(f"\nCover-probability ECE (FBS-only, all seasons pooled): {cover_ece:.4f}")
 
+    click.echo("\n=== CLV (spread): pick made at the OPENING line, held to close ===")
+    has_open = fbs_only[fbs_only["n_books_open_spread"].fillna(0) > 0].copy()
+    if len(has_open) == 0:
+        click.echo("No games have both an opening and closing spread -- CLV not computable.")
+    else:
+        has_open["open_cover_prob_home"] = has_open.apply(
+            lambda r: home_cover_probability(
+                r["predicted_margin"], r["resid_a"], r["resid_loc"], r["resid_scale"],
+                r["open_spread_home"],
+            ),
+            axis=1,
+        )
+        has_open["clv_picked_home"] = has_open["open_cover_prob_home"] > 0.5
+        has_open["spread_clv_points"] = has_open.apply(
+            lambda r: spread_clv_points(r["clv_picked_home"], r["open_spread_home"],
+                                         r["market_spread_home"]),
+            axis=1,
+        )
+        click.echo(f"{len(has_open)} games have both an opening and closing spread.")
+        clv_rows = []
+        for season, group in has_open.groupby("season"):
+            clv_rows.append({
+                "season": season, "n_games": len(group),
+                "mean_clv_points": group["spread_clv_points"].mean(),
+                "pct_positive_clv": (group["spread_clv_points"] > 0).mean(),
+            })
+        clv_summary = pd.DataFrame(clv_rows)
+        click.echo(clv_summary.to_string(index=False))
+        click.echo(f"\nPooled mean spread CLV: {has_open['spread_clv_points'].mean():.3f} points "
+                   f"({(has_open['spread_clv_points'] > 0).mean():.1%} of picks had positive CLV).")
+        clv_summary.to_csv("data/processed/spread_clv_by_season.csv", index=False)
+
     df.to_csv("data/processed/spread_backtest_predictions.csv", index=False)
     season_summary.to_csv("data/processed/spread_backtest_by_season.csv", index=False)
     click.echo("\nSaved: data/processed/spread_backtest_predictions.csv, "
@@ -354,8 +398,13 @@ def total_eval(start_season: int, end_season: int, refresh: bool) -> None:
     import pandas as pd
 
     from cfb.data.cache import fetch_lines_for_seasons, fetch_seasons
-    from cfb.data.lines_loader import consensus_closing_lines, parse_lines
+    from cfb.data.lines_loader import (
+        consensus_closing_lines,
+        consensus_opening_lines,
+        parse_lines,
+    )
     from cfb.data.loaders import games_from_cfbd_dicts
+    from cfb.evaluation.clv import total_clv_points
     from cfb.evaluation.metrics import expected_calibration_error, mean_absolute_error
     from cfb.models.total.scoreline_engine import (
         fit_total_residuals,
@@ -377,12 +426,18 @@ def total_eval(start_season: int, end_season: int, refresh: bool) -> None:
 
     click.echo(f"Fetching betting lines for seasons {seasons[0]}-{seasons[-1]} from CFBD...")
     raw_lines = fetch_lines_for_seasons(client, seasons, force_refresh=refresh)
-    consensus = consensus_closing_lines(parse_lines(raw_lines))
+    line_rows = parse_lines(raw_lines)
+    consensus = consensus_closing_lines(line_rows)
+    consensus_open = consensus_opening_lines(line_rows)
 
     df = total_df.merge(
         consensus[["game_id", "market_total", "n_books_total"]], on="game_id", how="inner"
     )
     df = df[df["n_books_total"] > 0].copy()
+    df = df.merge(
+        consensus_open[["game_id", "open_total", "n_books_open_total"]],
+        on="game_id", how="left",
+    )
 
     df["over_prob"] = df.apply(
         lambda r: over_probability(r["predicted_total"], r["resid_a"], r["resid_loc"],
@@ -425,6 +480,35 @@ def total_eval(start_season: int, end_season: int, refresh: bool) -> None:
         fbs_only["went_over"].astype(int).to_numpy(), fbs_only["over_prob"].to_numpy()
     )
     click.echo(f"\nOver-probability ECE (FBS-only, all seasons pooled): {ou_ece:.4f}")
+
+    click.echo("\n=== CLV (total): pick made at the OPENING line, held to close ===")
+    has_open = fbs_only[fbs_only["n_books_open_total"].fillna(0) > 0].copy()
+    if len(has_open) == 0:
+        click.echo("No games have both an opening and closing total -- CLV not computable.")
+    else:
+        has_open["open_over_prob"] = has_open.apply(
+            lambda r: over_probability(r["predicted_total"], r["resid_a"], r["resid_loc"],
+                                        r["resid_scale"], r["open_total"]),
+            axis=1,
+        )
+        has_open["clv_picked_over"] = has_open["open_over_prob"] > 0.5
+        has_open["total_clv_points"] = has_open.apply(
+            lambda r: total_clv_points(r["clv_picked_over"], r["open_total"], r["market_total"]),
+            axis=1,
+        )
+        click.echo(f"{len(has_open)} games have both an opening and closing total.")
+        clv_rows = []
+        for season, group in has_open.groupby("season"):
+            clv_rows.append({
+                "season": season, "n_games": len(group),
+                "mean_clv_points": group["total_clv_points"].mean(),
+                "pct_positive_clv": (group["total_clv_points"] > 0).mean(),
+            })
+        clv_summary = pd.DataFrame(clv_rows)
+        click.echo(clv_summary.to_string(index=False))
+        click.echo(f"\nPooled mean total CLV: {has_open['total_clv_points'].mean():.3f} points "
+                   f"({(has_open['total_clv_points'] > 0).mean():.1%} of picks had positive CLV).")
+        clv_summary.to_csv("data/processed/total_clv_by_season.csv", index=False)
 
     df.to_csv("data/processed/total_backtest_predictions.csv", index=False)
     season_summary.to_csv("data/processed/total_backtest_by_season.csv", index=False)

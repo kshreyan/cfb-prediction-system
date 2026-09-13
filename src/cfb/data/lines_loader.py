@@ -109,3 +109,25 @@ def consensus_closing_lines(rows: list[LineRow]) -> pd.DataFrame:
     # median()/count() on all-NaN groups yields NaN/0 already -- explicit
     # about "unavailable" rather than silently coercing to 0.
     return grouped
+
+
+def consensus_opening_lines(rows: list[LineRow]) -> pd.DataFrame:
+    """Same as consensus_closing_lines but for the OPENING snapshot
+    (`spreadOpen`/`overUnderOpen`). No moneyline: CFBD's free-tier feed
+    does not carry an opening moneyline field, only opening spread/total
+    -- so moneyline CLV cannot be computed from this data source, and
+    this function does not pretend otherwise by fabricating one.
+    """
+    df = pd.DataFrame([asdict(r) for r in rows if not r.is_closing])
+    if df.empty:
+        return pd.DataFrame(
+            columns=["game_id", "season", "week", "open_spread_home",
+                     "open_total", "n_books_open_spread", "n_books_open_total"]
+        )
+    grouped = df.groupby(["game_id", "season", "week"], as_index=False).agg(
+        open_spread_home=("spread_home", "median"),
+        n_books_open_spread=("spread_home", "count"),
+        open_total=("over_under", "median"),
+        n_books_open_total=("over_under", "count"),
+    )
+    return grouped

@@ -91,16 +91,24 @@ Real result (README): the weight walk-forward-learned on Elo shrank from
 information beyond the market — the ensemble ended up statistically tied
 with market-only on log loss (beat it in 2/5 seasons), not ahead of it.
 
+## CLV (`src/cfb/evaluation/clv.py`)
+
+`spread_clv_points` / `total_clv_points` compute points of closing-line
+value for a pick made at the opening line and held to close, using
+CFBD's real opening+closing spread/total snapshots (`consensus_opening_lines`
+/ `consensus_closing_lines` in `src/cfb/data/lines_loader.py`). Moneyline
+CLV is not computed: CFBD's free tier has no opening-moneyline field, so
+there's nothing to measure movement against without fabricating one.
+Real result (README): pooled mean CLV is ≈0 for both spread (−0.002 pts)
+and total (−0.033 pts) — no demonstrated edge, consistent with the
+ATS/O-U records.
+
 ## What is not yet built
 
-The Elo engine, spread model, total model, calibration layer, and
-ensemble have all been run end-to-end against real CFBD data (2015–2025
-— see README for results). Still not implemented:
+The Elo engine, spread model, total model, calibration layer, ensemble,
+and CLV computation have all been run end-to-end against real CFBD data
+(2015–2025 — see README for results). Still not implemented:
 
-- CLV vs a true closing line — CFBD's free tier gives one line snapshot
-  per book per game, not full line-movement history (see README's CLV
-  caveat); a proper CLV computation needs a source with real closing
-  timestamps.
 - SP+/FPI-derived features, EPA/success-rate features, recruiting/returning
   production, transfer portal, weather/altitude/travel features — none of
   the models above use anything but Elo/scoring-rate state yet. This is

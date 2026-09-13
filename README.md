@@ -39,7 +39,7 @@ This repo is under active build-out. Honest status as of the last commit:
 | Betting lines (spreads/totals/ML) pulled + market baseline | ✅ run — see results below |
 | Spread model (margin distribution, skew-normal residuals) | ✅ built and backtested vs real market spreads |
 | Total model (scoreline engine, skew-normal residuals) | ✅ built and backtested vs real market totals |
-| CLV vs closing line | 🚧 not computed yet (needs true line-movement history; see caveat below) |
+| CLV vs closing line (spread, total) | ✅ computed from real opening/closing snapshots — see results below |
 | Isotonic calibration layer, log-odds ensemble (weight learned walk-forward) | ✅ built and backtested vs real market moneylines |
 | SP+/FPI, EPA, recruiting, portal, weather/travel features | 🚧 not started — every model above uses only Elo/scoring-rate state |
 | GitHub Pages site, weekly workflow | 🚧 not started |
@@ -192,15 +192,40 @@ market data entering nowhere upstream of the final O/U comparison. The
 pooled 51.3% across all 9,132 decided games is the number that matters,
 and it shows no real edge. Over-probability ECE: 0.079 (pooled).
 
-### CLV caveat (read before trusting any future CLV number)
+### CLV: the decisive benchmark
 
-CFBD's free-tier historical odds endpoint returns one line snapshot per
-book per game (an "opening" and a "current/latest" field), not a full
-intraday time series. For completed historical games this repo treats
-that latest snapshot as a closing-line proxy, which is the best available
-signal without a paid odds-history feed — but it is a proxy, not a true
-tick-by-tick closing line, and that limitation should travel with any CLV
-number this project ever reports.
+CFBD's free-tier feed carries one **opening** and one **closing**
+snapshot per book per game for spreads and totals (not a full intraday
+time series — this is a real limitation, not a tick-by-tick closing line,
+so treat these as directionally meaningful rather than precise to the
+tenth of a point). That's enough for a genuine CLV computation: decide
+the pick using the model's cover/over probability against the **opening**
+line, then measure whether the line moved in the model's favor by close
+— independent of whether the individual bet won (`python -m cfb.cli
+spread-eval` / `total-eval`, 2021–2025, the seasons with real
+opening+closing coverage).
+
+**No moneyline CLV is reported** — CFBD's free tier has no opening
+moneyline field, only opening spread/total, so a moneyline CLV number
+would have to be fabricated to fill that gap. It isn't.
+
+| Market | Games | Mean CLV (points) | % picks with positive CLV |
+|---|---|---|---|
+| Spread | 3,937 | **−0.002** | 41.2% |
+| Total | 3,942 | **−0.033** | 44.3% |
+
+**Both are indistinguishable from zero — no demonstrated CLV edge on
+either market.** One nuance worth flagging rather than hiding: the
+"% positive" figures look worse than the near-zero means suggest, because
+~13% of spread lines (and a comparable share of totals) don't move at all
+between open and close, and a strict `> 0` threshold counts every
+zero-movement game as "not positive." The pooled **mean** CLV — which
+does credit zero-movement games as exactly neutral rather than as a loss
+— is the more honest single number, and it says the same thing both
+markets' ATS/O-U records already said: **this system currently shows no
+measurable edge over the market, on any metric, on any of the three
+targets.** That is the correct, current, and complete answer to this
+project's own acceptance criteria — not a hedge.
 
 ## Credentials
 
@@ -241,7 +266,7 @@ docs/           methodology notes
 
 ```bash
 make setup        # creates .venv, installs the package + dev deps
-make test         # runs the full test suite (37 tests, all passing)
+make test         # runs the full test suite (43 tests, all passing)
 make lint         # ruff + mypy, both clean
 export CFBD_API_KEY=...  # or rely on the local .env (already configured)
 make backtest      # walk-forward Elo backtest, 2015-2025 by default
