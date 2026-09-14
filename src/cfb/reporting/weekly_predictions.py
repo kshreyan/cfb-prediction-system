@@ -20,11 +20,16 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
+
 from cfb.calibration.isotonic_calibrator import fit_calibrator_for_season
 from cfb.data.cache import fetch_seasons
 from cfb.data.cfbd_client import CfbdClient
 from cfb.data.lines_loader import consensus_closing_lines, parse_lines
 from cfb.data.loaders import games_from_cfbd_dicts
+from cfb.data.odds_api_client import MissingOddsApiKeyError, OddsApiClient
+from cfb.data.odds_api_loader import odds_api_consensus
 from cfb.elo.config import EloConfig
 from cfb.elo.engine import EloEngine
 from cfb.models.spread.margin_model import (
@@ -73,6 +78,40 @@ class GamePrediction:
     n_books_spread: int
     n_books_total: int
     n_books_ml: int
+    market_source: str  # "the-odds-api", "cfbd", "both" (different fields from each), or "none"
+
+
+def _merge_market_sources(cfbd_consensus: pd.DataFrame, odds_consensus: pd.DataFrame) -> pd.DataFrame:
+    """Coalesces two consensus tables by game_id, field by field, always
+    preferring The Odds API's real-time multi-book data (more books,
+    real timestamps) and falling back to CFBD's for any game/field it
+    doesn't cover -- never averaging the two sources together, since
+    that would blur two different snapshot times into a meaningless
+    number. Adds `market_source` so it's visible which source won."""
+    merged = cfbd_consensus.merge(
+        odds_consensus, on="game_id", how="outer", suffixes=("_cfbd", "_odds")
+    )
+    out = pd.DataFrame({"game_id": merged["game_id"]})
+    for field, count_field in [("market_spread_home", "n_books_spread"),
+                                ("market_total", "n_books_total"),
+                                ("market_home_win_prob", "n_books_ml")]:
+        odds_col, cfbd_col = f"{field}_odds", f"{field}_cfbd"
+        odds_count = merged.get(f"{count_field}_odds", pd.Series(0, index=merged.index)).fillna(0)
+        out[field] = merged[odds_col].where(odds_count > 0, merged[cfbd_col])
+        out[count_field] = merged.get(f"{count_field}_odds", 0).where(
+            odds_count > 0, merged.get(f"{count_field}_cfbd", 0)
+        ).fillna(0).astype(int)
+
+    used_odds = (merged.get("n_books_spread_odds", 0).fillna(0) > 0) | \
+                (merged.get("n_books_total_odds", 0).fillna(0) > 0) | \
+                (merged.get("n_books_ml_odds", 0).fillna(0) > 0)
+    used_cfbd = (merged.get("n_books_spread_cfbd", 0).fillna(0) > 0) | \
+                (merged.get("n_books_total_cfbd", 0).fillna(0) > 0) | \
+                (merged.get("n_books_ml_cfbd", 0).fillna(0) > 0)
+    out["market_source"] = np.select(
+        [used_odds & used_cfbd, used_odds, used_cfbd], ["both", "the-odds-api", "cfbd"], "none"
+    )
+    return out
 
 
 def _resolve_target_week(client: CfbdClient, season: int, week: int | None) -> int:
@@ -109,7 +148,6 @@ def generate_weekly_predictions(season: int, week: int | None = None,
             "home_won": g.home_won, "home_margin": g.margin,
             "is_fbs_vs_fbs": g.home_is_fbs and g.away_is_fbs,
         })
-    import pandas as pd
     elo_df = pd.DataFrame(elo_rows)
 
     margin_df = run_margin_backtest(elo_df)
@@ -128,7 +166,16 @@ def generate_weekly_predictions(season: int, week: int | None = None,
     upcoming = [rg for rg in raw_upcoming if not rg["completed"]]
 
     raw_lines = client.fetch_lines(season=season, week=target_week, season_type="regular")
-    consensus = consensus_closing_lines(parse_lines(raw_lines))
+    cfbd_consensus = consensus_closing_lines(parse_lines(raw_lines))
+
+    try:
+        odds_client = OddsApiClient.from_env()
+        odds_games = odds_client.fetch_live_odds()
+        odds_consensus = odds_api_consensus(odds_games, raw_upcoming, season, target_week)
+    except MissingOddsApiKeyError:
+        odds_consensus = odds_api_consensus([], raw_upcoming, season, target_week)  # empty
+
+    consensus = _merge_market_sources(cfbd_consensus, odds_consensus)
     consensus_by_game = {row["game_id"]: row for row in consensus.to_dict("records")}
 
     predictions: list[GamePrediction] = []
@@ -158,6 +205,7 @@ def generate_weekly_predictions(season: int, week: int | None = None,
         market_spread_home = market_total = market_home_win_prob = None
         n_books_spread = n_books_total = n_books_ml = 0
         home_cover_prob = over_prob = spread_edge = total_edge = ml_edge = None
+        market_source = market_row.get("market_source", "none") if market_row else "none"
 
         if market_row is not None:
             n_books_spread = int(market_row.get("n_books_spread") or 0)
@@ -199,6 +247,7 @@ def generate_weekly_predictions(season: int, week: int | None = None,
             spread_edge_points=spread_edge, total_edge_points=total_edge,
             moneyline_edge_prob=ml_edge,
             n_books_spread=n_books_spread, n_books_total=n_books_total, n_books_ml=n_books_ml,
+            market_source=market_source,
         ))
 
     generated_at = datetime.now(UTC).isoformat()

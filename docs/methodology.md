@@ -147,6 +147,32 @@ predictions (`cfb predict`) do not yet use the GBM -- only Elo -- since
 wiring the full feature pipeline into the not-yet-played-game path is
 separate, not-yet-done work.
 
+## Real-time odds (`src/cfb/data/odds_api_client.py`, `odds_api_loader.py`, `odds_api_matching.py`)
+
+A paid, real-time, multi-book source (The Odds API), used as the
+preferred market feed for `cfb predict` with CFBD as fallback. Design
+choices worth remembering:
+
+- **Live endpoint only, not a historical backfill.** The live endpoint
+  is cheap (fixed credits per call, not per game); the historical
+  endpoint is priced per timestamp snapshot, and backfilling 2015-2025
+  at the granularity needed for real tick-level CLV would cost far more
+  than a 20,000-credit quota. Every call logs its exact cost
+  (`x-requests-*` response headers) rather than spending silently.
+- **Team-name matching bug, found and fixed**: naive startswith prefix
+  matching let an Odds API name like "Iowa State Cyclones" ambiguously
+  resolve to either "Iowa" or "Iowa State" depending on Python's
+  per-process hash-randomized set/dict iteration order -- the exact same
+  input could match differently across runs. Fixed by always preferring
+  the longest (most specific) candidate name; regression-tested.
+- **Home/away disagreement**: the two sources occasionally label
+  different teams "home" for the same neutral-site game. The loader
+  tries the flipped team pairing before giving up, and when it uses a
+  flipped match, negates the spread and swaps the moneylines so the
+  result is always expressed relative to CFBD's home team.
+- Sources are never averaged together -- one wins per game/field
+  (Odds API preferred), recorded in a `market_source` field, not blended.
+
 ## What is not yet built
 
 The Elo engine, spread model, total model, calibration layer, ensemble,

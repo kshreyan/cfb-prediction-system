@@ -79,14 +79,18 @@
 <section>
   <h2>Week {{ snapshot.week }}, {{ snapshot.season }} &mdash; {{ snapshot.n_games }} upcoming games</h2>
   <p class="sub">Generated {{ snapshot.generated_at }}. Immutable snapshot &mdash; predictions are
-    never edited after publication; results are joined in separately once games are played.</p>
+    never edited after publication; results are joined in separately once games are played.
+    "Source" shows which market data won for that game: <strong>the-odds-api</strong> (real-time,
+    multi-book, preferred when available) or <strong>cfbd</strong> (fallback) &mdash; never both
+    averaged together, since that would blur two different snapshot times into a meaningless
+    number.</p>
   <div class="table-wrap">
   <table>
     <thead>
       <tr>
         <th>Matchup</th><th>Home win %</th><th>Pred. margin</th><th>Pred. total</th>
         <th>Market spread</th><th>Cover %</th><th>Market total</th><th>Over %</th>
-        <th>Market ML</th><th>Edge (ML)</th>
+        <th>Market ML</th><th>Edge (ML)</th><th>Source</th>
       </tr>
     </thead>
     <tbody>
@@ -119,6 +123,7 @@
         {% else %}
         <td class="na">no line</td><td class="na">&mdash;</td>
         {% endif %}
+        <td class="na">{{ g.market_source }}</td>
       </tr>
       {% endfor %}
     </tbody>

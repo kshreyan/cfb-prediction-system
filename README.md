@@ -46,6 +46,7 @@ This repo is under active build-out. Honest status as of the last commit:
 | EPA/success-rate (leak-free walk-forward) + SP+/recruiting/talent priors + GBM moneyline model | ✅ built and backtested — see "GBM vs Elo vs market" below |
 | Transfer portal, weather, travel/rest, injuries/QB status, per-venue home field | 🚧 not started — still not in any model's feature set |
 | Scheduled weekly-refresh GitHub Actions workflow | ✅ workflow written (`.github/workflows/weekly-refresh.yml`), **inert until `CFBD_API_KEY` is added as a repo secret — won't add without asking first** (see Credentials) |
+| Real-time multi-book odds (The Odds API) for live weekly predictions | ✅ integrated as the preferred market source, CFBD as fallback — see below |
 
 ### Real backtest results (raw Elo, no calibration layer, no market blend)
 
@@ -282,6 +283,14 @@ project's own acceptance criteria — not a hedge.
   loaded automatically via `python-dotenv`). Not stored in any synced or
   cross-session memory — `.env` on this machine is the single source of
   truth for it.
+- **The Odds API key (paid)**: same treatment — local `.env` only
+  (`ODDS_API_KEY`), auto-loaded, never in memory or git. This is a
+  metered paid API; every call logs its real credit cost from the
+  response headers rather than spending silently (see
+  `src/cfb/data/odds_api_client.py`). Used for live current-week odds
+  in `cfb predict` (cheap — ~3 credits/week regardless of game count);
+  **not** used for a full historical backfill — see "Real-time odds"
+  below for why and what a scoped alternative would cost.
 - **GitHub**: repo created at https://github.com/kshreyan/cfb-prediction-system
   (private) and connected as `origin`, using the already-authenticated
   local `gh` CLI session.
@@ -336,24 +345,67 @@ make predict       # immutable prediction snapshot for the next upcoming week
 make report        # builds docs/ (site) from whatever's in data/processed/
 ```
 
-### This week (live, generated 2026-09-13)
+### Real-time odds (The Odds API)
+
+Added a paid, real-time, multi-book odds source (`src/cfb/data/odds_api_client.py`)
+as the **preferred** market feed for live weekly predictions, with CFBD
+kept as the fallback for games it doesn't cover — never averaged
+together, since blending two different snapshot times would produce a
+meaningless number (`_merge_market_sources` in
+`weekly_predictions.py` picks one source per game and records which in
+a new `market_source` field, shown as a column on the site).
+
+- **Cost-aware by design**: the live-odds endpoint costs a small, fixed
+  number of credits per call regardless of game count (~3 credits for
+  the *entire* week's NCAAF slate across moneyline/spread/total) — cheap
+  enough for routine weekly use out of a 20,000-credit quota. The
+  historical endpoint is priced per timestamp snapshot instead and would
+  cost far more than the remaining quota to backfill 2015–2025 at the
+  granularity needed for real CLV — so that backfill was **not**
+  attempted; every API call logs its exact credit cost so spend is
+  never silent.
+- **Team-name matching** (`odds_api_matching.py`) handles the "City
+  Mascot" vs. CFBD's plain-school-name conventions (e.g. "Pittsburgh
+  Panthers" → "Pittsburgh"), including a real bug caught and fixed
+  during this integration: naive prefix matching let "Iowa State
+  Cyclones" ambiguously match either "Iowa" or "Iowa State" depending on
+  Python's per-process hash-randomized set/dict iteration order —
+  non-deterministic across runs. Fixed by always preferring the longest
+  (most specific) matching name, with a regression test locking that in.
+- **Home/away disagreement handling**: the two sources occasionally
+  disagree on which team is "home" for a neutral-site game (observed
+  live: CFBD called Kansas home vs. Arizona State; Odds API called it
+  the other way). The loader tries the flipped pairing before giving up,
+  and correctly negates the spread / swaps the moneylines so everything
+  ends up expressed relative to *CFBD's* home team, not whichever team
+  Odds API happened to label home.
+- A game unmatched by name, or with no market posted anywhere, is
+  reported as unavailable — never guessed or imputed.
+
+### This week (live, generated 2026-09-14)
 
 `make predict` was run against the real, live 2026 season (currently week
-3, 75 upcoming FBS games) — not a demo. Sample rows (see `docs/` after
+3, 75 upcoming FBS games) — not a demo, and now backed by real-time
+multi-book odds where available. Sample rows (see `docs/` after
 `make report`, or `data/processed/predictions/*.json` for the full,
 immutable snapshot):
 
-| Game | Home win % | Pred. margin | Market spread (cover %) | Market ML |
-|---|---|---|---|---|
-| Georgia @ Arkansas | 12% | −18.1 | +24.5 (64%) | 6% |
-| Florida State @ Alabama | 91% | +20.9 | −18.5 (55%) | 88% |
-| Portland State @ Oregon `[FBS–FCS]` | 100% | +46.6 | no line posted | — |
+| Game | Home win % | Pred. margin | Market spread (cover %) | Market ML | Source |
+|---|---|---|---|---|---|
+| Georgia @ Arkansas | 12% | −18.1 | +24.5 (64%) | 7% | both |
+| Florida State @ Alabama | 91% | +20.9 | −20.5 (51%) | 90% | both |
+| Portland State @ Oregon `[FBS–FCS]` | 100% | +46.6 | −57.5 (26%) | no line | the-odds-api |
+
+That last row is the real-time feed's contribution: CFBD had no line at
+all for that mismatch, but The Odds API did — more coverage, not just
+more precision.
 
 The full site (`docs/index.html`) renders all 75 games plus the
-calibration reliability charts, ATS/O-U record charts, and CLV charts
-shown above — it's built and committed, but **GitHub Pages is not yet
-enabled** in the repo settings (see Credentials below for why that's a
-separate ask, not something I turned on unilaterally).
+calibration reliability charts, ATS/O-U record charts, CLV charts, and
+the GBM-vs-Elo-vs-market comparison shown above — it's built and
+committed, but **GitHub Pages is not yet enabled** in the repo settings
+(see Credentials below for why that's a separate ask, not something I
+turned on unilaterally).
 
 Dependencies are pinned as ranges in `pyproject.toml` and fully resolved
 in `requirements-lock.txt` (generated via `pip freeze` against the exact
