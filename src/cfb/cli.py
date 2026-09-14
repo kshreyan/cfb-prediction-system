@@ -249,6 +249,135 @@ def ensemble_eval(start_season: int, end_season: int, refresh: bool) -> None:
     click.echo("\nSaved: data/processed/ensemble_predictions.csv, ensemble_summary.csv")
 
 
+@main.command("gbm-eval")
+@click.option("--start-season", default=2015, show_default=True)
+@click.option("--end-season", default=2025, show_default=True)
+@click.option("--refresh/--no-refresh", default=False, help="Force re-fetch from CFBD.")
+def gbm_eval(start_season: int, end_season: int, refresh: bool) -> None:
+    """The highest-leverage test in this repo: does a feature-rich GBM
+    (Elo-diff + leak-free walk-forward EPA/success-rate + preseason
+    SP+/recruiting/talent priors) beat Elo-only and market-only
+    out-of-sample -- and does a 3-way ensemble (calibrated Elo + GBM +
+    market) beat the 2-way (Elo + market) ensemble from `ensemble-eval`?
+    """
+    import pandas as pd
+
+    from cfb.calibration.isotonic_calibrator import walk_forward_isotonic_calibrate
+    from cfb.data.cache import (
+        fetch_advanced_stats_for_seasons,
+        fetch_lines_for_seasons,
+        fetch_recruiting_for_seasons,
+        fetch_sp_ratings_for_seasons,
+        fetch_talent_for_seasons,
+    )
+    from cfb.data.cache import fetch_seasons as fetch_games_for_seasons
+    from cfb.data.lines_loader import consensus_closing_lines, parse_lines
+    from cfb.data.loaders import games_from_cfbd_dicts
+    from cfb.ensemble.blend import walk_forward_ensemble
+    from cfb.evaluation.metrics import (
+        accuracy,
+        brier_score,
+        expected_calibration_error,
+        log_loss,
+    )
+    from cfb.features.feature_builder import build_feature_matrix
+    from cfb.features.preseason_priors import (
+        build_recruiting_lookup,
+        build_sp_plus_lookup,
+        build_talent_lookup,
+    )
+    from cfb.models.moneyline.gbm import MIN_TRAIN_GAMES, run_gbm_backtest
+
+    client = _get_client()
+    seasons = list(range(start_season, end_season + 1))
+    prior_seasons = list(range(start_season - 1, end_season + 1))  # SP+ needs season-1 too
+
+    elo_df = _run_elo_backtest(client, seasons, refresh)
+    raw_games = fetch_games_for_seasons(client, seasons, force_refresh=refresh)
+    games = games_from_cfbd_dicts(raw_games)
+
+    click.echo("Fetching advanced (EPA/success-rate) stats, SP+, recruiting, talent...")
+    raw_advanced = fetch_advanced_stats_for_seasons(client, seasons, force_refresh=refresh)
+    raw_sp = fetch_sp_ratings_for_seasons(client, prior_seasons, force_refresh=refresh)
+    raw_recruiting = fetch_recruiting_for_seasons(client, seasons, force_refresh=refresh)
+    raw_talent = fetch_talent_for_seasons(client, seasons, force_refresh=refresh)
+
+    feature_df = build_feature_matrix(
+        elo_df, games, raw_advanced,
+        build_sp_plus_lookup(raw_sp), build_recruiting_lookup(raw_recruiting),
+        build_talent_lookup(raw_talent),
+    )
+    fbs_df = feature_df[feature_df["is_fbs_vs_fbs"]].copy()
+    fbs_df["home_won_int"] = fbs_df["home_won"].astype(int)
+    click.echo(f"{len(fbs_df)} FBS-vs-FBS games available for GBM training/backtest "
+               f"(GBM activates once {MIN_TRAIN_GAMES} strictly-prior games exist).")
+
+    click.echo("Running walk-forward GBM backtest...")
+    fbs_df = run_gbm_backtest(fbs_df)
+
+    click.echo("Fitting walk-forward isotonic calibration on raw Elo...")
+    fbs_df["elo_calibrated_prob"] = walk_forward_isotonic_calibrate(
+        fbs_df, "home_win_prob", "home_won_int"
+    )
+
+    click.echo(f"Fetching betting lines for seasons {seasons[0]}-{seasons[-1]} from CFBD...")
+    raw_lines = fetch_lines_for_seasons(client, seasons, force_refresh=refresh)
+    consensus = consensus_closing_lines(parse_lines(raw_lines))
+    df = fbs_df.merge(
+        consensus[["game_id", "market_home_win_prob", "n_books_ml"]], on="game_id", how="inner"
+    )
+    df = df[(df["n_books_ml"] > 0) & df["gbm_prob"].notna()].copy()
+    click.echo(f"\n{len(df)} games have Elo + GBM + a real posted moneyline "
+               "(the apples-to-apples comparison set).")
+
+    click.echo("Building 3-way ensemble: (calibrated Elo <-> GBM) <-> market, both "
+               "weights learned walk-forward on strictly-prior seasons...")
+    df = walk_forward_ensemble(df, "elo_calibrated_prob", "gbm_prob", "home_won_int")
+    df = df.rename(columns={"ensemble_prob": "elo_gbm_prob",
+                             "ensemble_weight_on_model": "weight_on_elo_vs_gbm"})
+    df = walk_forward_ensemble(df, "elo_gbm_prob", "market_home_win_prob", "home_won_int")
+    df = df.rename(columns={"ensemble_prob": "three_way_ensemble_prob",
+                             "ensemble_weight_on_model": "weight_on_model_vs_market"})
+
+    rows = []
+    for season, group in df.groupby("season"):
+        y = group["home_won_int"].to_numpy()
+        preds = {
+            "elo_raw": group["home_win_prob"].to_numpy(),
+            "gbm": group["gbm_prob"].to_numpy(),
+            "market": group["market_home_win_prob"].to_numpy(),
+            "three_way_ensemble": group["three_way_ensemble_prob"].to_numpy(),
+        }
+        row = {"season": season, "n_games": len(group)}
+        for name, p in preds.items():
+            row[f"{name}_acc"] = accuracy(y, p)
+            row[f"{name}_logloss"] = log_loss(y, p)
+            row[f"{name}_brier"] = brier_score(y, p)
+            row[f"{name}_ece"] = expected_calibration_error(y, p)
+        rows.append(row)
+    summary = pd.DataFrame(rows).sort_values("season").reset_index(drop=True)
+
+    click.echo("\n=== Log loss: Elo-raw vs GBM vs market vs 3-way ensemble ===")
+    click.echo(summary[["season", "n_games", "elo_raw_logloss", "gbm_logloss",
+                         "market_logloss", "three_way_ensemble_logloss"]].to_string(index=False))
+    click.echo("\n=== Accuracy ===")
+    click.echo(summary[["season", "elo_raw_acc", "gbm_acc", "market_acc",
+                         "three_way_ensemble_acc"]].to_string(index=False))
+
+    gbm_beats_elo = (summary["gbm_logloss"] < summary["elo_raw_logloss"]).sum()
+    gbm_beats_market = (summary["gbm_logloss"] < summary["market_logloss"]).sum()
+    ens3_beats_market = (summary["three_way_ensemble_logloss"] < summary["market_logloss"]).sum()
+    click.echo(f"\nGBM beat Elo-only on log loss in {gbm_beats_elo}/{len(summary)} seasons.")
+    click.echo(f"GBM beat market-only on log loss in {gbm_beats_market}/{len(summary)} seasons.")
+    click.echo(f"3-way ensemble beat market-only on log loss in "
+               f"{ens3_beats_market}/{len(summary)} seasons.")
+    click.echo("Per the honesty standard: reported as-is, whichever way it comes out.")
+
+    df.to_csv("data/processed/gbm_predictions.csv", index=False)
+    summary.to_csv("data/processed/gbm_summary.csv", index=False)
+    click.echo("\nSaved: data/processed/gbm_predictions.csv, gbm_summary.csv")
+
+
 @main.command("spread-eval")
 @click.option("--start-season", default=2015, show_default=True)
 @click.option("--end-season", default=2025, show_default=True)

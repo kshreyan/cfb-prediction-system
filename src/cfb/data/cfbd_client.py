@@ -116,12 +116,50 @@ class CfbdClient:
             ]
 
     def fetch_advanced_stats(self, season: int, week: int | None = None) -> list[dict]:
+        """Per-game, per-team advanced stats (PPA/EPA, success rate,
+        explosiveness) -- the raw material for a leak-free, walk-forward
+        EPA feature engine (never a season-aggregated stat, which would
+        leak future games' plays into an early-season prediction)."""
         with cfbd.ApiClient(self._configuration()) as api_client:
             api = cfbd.StatsApi(api_client)
             fetched_at = datetime.now(UTC).isoformat()
-            stats = api.get_advanced_game_stats(year=season, week=week)
+            stats = api.get_advanced_game_stats(
+                year=season, week=week, season_type="both"  # type: ignore[arg-type]
+            )
+            logger.info("fetched_advanced_stats", season=season, week=week, count=len(stats))
             return [
                 {**s.to_dict(), "_source": "cfbd.advanced_stats",
                  "_fetched_at": fetched_at, "_season": season, "_week": week}
                 for s in stats
+            ]
+
+    def fetch_sp_ratings(self, season: int) -> list[dict]:
+        """One SP+ rating per team per season -- CFBD's free tier does not
+        expose a week-by-week SP+ history, so this is only safe to use as
+        a PRIOR-season preseason prior (see docs/methodology.md), never as
+        an in-season feature for games in the same season it was computed."""
+        with cfbd.ApiClient(self._configuration()) as api_client:
+            api = cfbd.RatingsApi(api_client)
+            fetched_at = datetime.now(UTC).isoformat()
+            ratings = api.get_sp(year=season)
+            logger.info("fetched_sp_ratings", season=season, count=len(ratings))
+            return [
+                {**r.to_dict(), "_source": "cfbd.sp_ratings", "_fetched_at": fetched_at,
+                 "_season": season}
+                for r in ratings
+            ]
+
+    def fetch_recruiting_rankings(self, season: int) -> list[dict]:
+        """One recruiting class ranking per team per season -- inherently a
+        preseason signal (the class was signed before the season), so safe
+        to use directly as that season's feature (not just prior-season)."""
+        with cfbd.ApiClient(self._configuration()) as api_client:
+            api = cfbd.RecruitingApi(api_client)
+            fetched_at = datetime.now(UTC).isoformat()
+            rankings = api.get_team_recruiting_rankings(year=season)
+            logger.info("fetched_recruiting_rankings", season=season, count=len(rankings))
+            return [
+                {**r.to_dict(), "_source": "cfbd.recruiting", "_fetched_at": fetched_at,
+                 "_season": season}
+                for r in rankings
             ]

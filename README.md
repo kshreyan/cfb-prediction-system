@@ -43,7 +43,8 @@ This repo is under active build-out. Honest status as of the last commit:
 | Isotonic calibration layer, log-odds ensemble (weight learned walk-forward) | ✅ built and backtested vs real market moneylines |
 | Live weekly predictions (immutable JSON snapshot, real upcoming games) | ✅ built and run — see "This week" below |
 | Static site (GitHub Pages, `docs/`) — predictions, calibration & CLV charts, honest ATS record | ✅ built; **Pages not yet enabled in repo settings — ask before I flip that on** |
-| SP+/FPI, EPA, recruiting, portal, weather/travel features | 🚧 not started — every model above uses only Elo/scoring-rate state |
+| EPA/success-rate (leak-free walk-forward) + SP+/recruiting/talent priors + GBM moneyline model | ✅ built and backtested — see "GBM vs Elo vs market" below |
+| Transfer portal, weather, travel/rest, injuries/QB status, per-venue home field | 🚧 not started — still not in any model's feature set |
 | Scheduled weekly-refresh GitHub Actions workflow | ✅ workflow written (`.github/workflows/weekly-refresh.yml`), **inert until `CFBD_API_KEY` is added as a repo secret — won't add without asking first** (see Credentials) |
 
 ### Real backtest results (raw Elo, no calibration layer, no market blend)
@@ -140,6 +141,52 @@ Averaging two differently-biased predictors can improve calibration
 without improving discrimination — a known property of ensembling, not
 an edge claim; log loss (which rewards discrimination, not just
 calibration) is still the metric this project selects on.
+
+### GBM vs Elo vs market: does feature-rich modeling actually help?
+
+The single biggest acknowledged gap after the first pass of this project
+was that every model used only Elo/scoring-rate state — no EPA, no SP+,
+no recruiting, no talent. This closes that gap for moneyline: a
+LightGBM classifier trained walk-forward per season (strictly-prior
+seasons only, refit at each boundary) on 15 features — Elo differential,
+leak-free walk-forward EPA/success-rate state (offense **and** defense,
+both teams, built the same way as the Elo/scoreline engines: predict
+from an EWMA of prior games, then update — see
+`src/cfb/features/epa_engine.py`), and three preseason priors (SP+
+**lagged one full season** to avoid leaking in-season results, recruiting
+class ranking and talent composite used directly since those are signed
+before the season starts — see `src/cfb/features/preseason_priors.py`
+for why the lag differs by metric). Missing values (no tracked advanced
+stats for a game, no recruiting/talent record for a team) are passed
+through as NaN, not imputed — LightGBM splits on missingness natively
+(`python -m cfb.cli gbm-eval`, 2021–2025, the games with real posted
+moneylines):
+
+| Season | n | Elo-raw LL | **GBM LL** | Market LL | 3-way ensemble LL |
+|---|---|---|---|---|---|
+| 2021 | 721 | 0.572 | **0.566** | 0.550 | 0.544 |
+| 2022 | 708 | 0.619 | 0.622 | 0.589 | 0.593 |
+| 2023 | 772 | 0.568 | **0.557** | 0.523 | 0.526 |
+| 2024 | 787 | 0.584 | **0.573** | 0.541 | 0.542 |
+| 2025 | 783 | 0.568 | **0.558** | 0.536 | 0.535 |
+
+**GBM beat Elo-only on log loss in 4/5 seasons** — real, if modest,
+signal from EPA/SP+/recruiting/talent that bare Elo structurally
+couldn't see. **GBM did not beat market-only in any season (0/5)**, and
+folding GBM into the 3-way ensemble (calibrated Elo ↔ GBM, then that
+↔ market, both weights walk-forward-learned) didn't meaningfully improve
+on the 2-way Elo+market ensemble above — it still only beats market-only
+in 2/5 seasons, same as before. **Read plainly: richer features made the
+model meaningfully better than its own bare-Elo predecessor, but still
+not competitive with the market.** That's a real result, not a
+disappointing one to talk around — beating a market that prices in
+injuries, weather, and information this system still doesn't have was
+never the honest expectation at this stage.
+
+Known limitation: live weekly predictions (`cfb predict`) still use Elo
+only, not the GBM — wiring the full EPA/SP+/recruiting/talent feature
+pipeline into the live (not-yet-played-game) path is real remaining
+work, not yet done.
 
 ### Spread model: real ATS backtest (the actual skill test)
 
@@ -282,6 +329,7 @@ export CFBD_API_KEY=...  # or rely on the local .env (already configured)
 make backtest      # walk-forward Elo backtest, 2015-2025 by default
 make market-eval   # Elo vs de-vigged market moneyline, real odds
 make ensemble-eval # calibrated Elo + market ensemble, real odds
+make gbm-eval      # feature-rich GBM (EPA/SP+/recruiting/talent) vs Elo vs market
 make spread-eval   # real ATS backtest vs the market spread
 make total-eval    # real O/U backtest vs the market total
 make predict       # immutable prediction snapshot for the next upcoming week

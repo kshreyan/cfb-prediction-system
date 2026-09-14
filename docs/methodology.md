@@ -103,20 +103,71 @@ Real result (README): pooled mean CLV is ≈0 for both spread (−0.002 pts)
 and total (−0.033 pts) — no demonstrated edge, consistent with the
 ATS/O-U records.
 
+## EPA/success-rate feature engine (`src/cfb/features/epa_engine.py`)
+
+Same discipline as the Elo and scoreline engines: predicts from an EWMA
+(α=0.2) of PRIOR games' per-team PPA (predicted points added, i.e. EPA)
+and success rate -- offense and defense separately -- then updates. Built
+from CFBD's per-game advanced-stats endpoint specifically because the
+season-aggregate version of that endpoint would leak an early-season
+game's own (and later weeks') plays into its own prediction. A team's
+state isn't updated for a game with no tracked advanced stats (common
+for FCS opponents) rather than updating with a fabricated value.
+Regresses toward the league-average prior at each offseason boundary,
+same as Elo and the scoreline engine.
+
+## Preseason priors (`src/cfb/features/preseason_priors.py`)
+
+SP+, recruiting-class ranking, and talent composite, with deliberately
+different leakage handling per metric: **SP+ is lagged a full season**
+(a game in season S uses season S-1's final SP+ -- CFBD's free tier
+exposes no week-by-week SP+ history, so using season S's own rating for
+season S games would be the exact "end-of-season SP+ on early-season
+games" trap the master brief calls out by name). **Recruiting and talent
+are used directly for the season they describe** -- both are set before
+the season kicks off, so no lag is needed or correct. Missing data is
+NaN, not imputed.
+
+## GBM moneyline model (`src/cfb/models/moneyline/gbm.py`)
+
+LightGBM classifier, walk-forward per season (train = strictly prior
+seasons only, refit at each boundary, `MIN_TRAIN_GAMES=1500` before it
+activates -- roughly seasons 2017+ given ~800 FBS games/season). 15
+features: Elo differential + the EPA engine's 8 offense/defense state
+values (both teams) + the 6 preseason-prior values (both teams). NaN
+features pass through untouched; LightGBM splits on missingness
+natively rather than this pipeline imputing a fill value.
+
+Real result (README, `gbm-eval`): GBM beat Elo-only on log loss in 4/5
+seasons (2021, 2023, 2024, 2025) with real data it couldn't see before --
+but did not beat market-only in any season (0/5), and folding it into a
+3-way ensemble (calibrated Elo ↔ GBM ↔ market) didn't improve on the
+2-way Elo+market ensemble's already-modest 2/5 record. Live weekly
+predictions (`cfb predict`) do not yet use the GBM -- only Elo -- since
+wiring the full feature pipeline into the not-yet-played-game path is
+separate, not-yet-done work.
+
 ## What is not yet built
 
 The Elo engine, spread model, total model, calibration layer, ensemble,
-and CLV computation have all been run end-to-end against real CFBD data
-(2015–2025 — see README for results). Still not implemented:
+CLV computation, EPA/preseason-prior features, and GBM model have all
+been run end-to-end against real CFBD data (2015–2025 — see README for
+results). Still not implemented:
 
-- SP+/FPI-derived features, EPA/success-rate features, recruiting/returning
-  production, transfer portal, weather/altitude/travel features — none of
-  the models above use anything but Elo/scoring-rate state yet. This is
-  the most likely lever to actually close the gap to the market, since a
-  single-signal Elo model structurally can't see what injuries/weather/
-  efficiency data would show it.
-- A GBM/logistic layer in the moneyline stack (currently the "model" side
-  of the ensemble is calibrated Elo only, not the logistic + GBM + Elo
-  stack the original brief describes) — natural next step once real
-  features exist to feed it.
-- GitHub Pages site generation and the weekly refresh workflow.
+- Transfer portal, weather, travel/rest, injuries/QB status, and
+  per-venue home field — none of these are in any model's feature set
+  yet, and are the most likely remaining lever to close the gap to the
+  market (weather/injuries especially are exactly the kind of
+  game-specific information a market prices that a season-level or
+  EWMA-based feature structurally can't capture).
+- GBM/richer features for the spread and total models — currently only
+  the moneyline stack has them; spread/total are still Elo-diff-only and
+  scoring-rate-EWMA-only respectively.
+- Wiring the GBM into live weekly predictions (`cfb predict` still uses
+  Elo only).
+- Walk-forward hyperparameter tuning — Elo's K-factor/home-field-adj,
+  the EWMA α values, and the GBM's tree hyperparameters are all fixed
+  heuristics, never tuned via nested time-series CV against alternatives.
+- GitHub Pages is built but not enabled in repo settings; the weekly
+  refresh workflow is written but inert without a repo secret — both
+  deliberately left for the user to opt into (see README, Credentials).
