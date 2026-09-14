@@ -162,6 +162,11 @@
       <div class="value">{{ "%.1f"|format(headline.elo_accuracy * 100) }}%</div>
       <div class="note">inflated by mismatches if FCS included &mdash; see banner above</div></div>
     {% endif %}
+    {% if headline.gbm_beats_elo_seasons is defined %}
+    <div class="stat"><div class="label">GBM (EPA+SP+/recruiting/talent) beats Elo</div>
+      <div class="value">{{ headline.gbm_beats_elo_seasons }} seasons</div>
+      <div class="note">{{ headline.gbm_n_games }} games &mdash; still doesn't beat market (0/5)</div></div>
+    {% endif %}
   </div>
 </section>
 

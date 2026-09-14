@@ -95,3 +95,30 @@ def render_ats_record_chart(by_season: pd.DataFrame, path: Path, title: str,
     fig.tight_layout()
     fig.savefig(path, facecolor=_BG)
     plt.close(fig)
+
+
+def render_model_comparison_chart(summary: pd.DataFrame, path: Path, title: str) -> None:
+    """Grouped bars: log loss by season for Elo-raw / GBM / market."""
+    fig, ax = plt.subplots(figsize=(7, 3.8), dpi=150)
+    fig.patch.set_facecolor(_BG)
+    _style_axes(ax)
+
+    seasons = summary["season"].astype(str).to_numpy()
+    x = np.arange(len(seasons))
+    width = 0.25
+    series = [
+        ("elo_raw_logloss", "Elo-raw", "#94a3b8"),
+        ("gbm_logloss", "GBM", _ACCENT),
+        ("market_logloss", "Market", "#16a34a"),
+    ]
+    for i, (col, label, color) in enumerate(series):
+        ax.bar(x + (i - 1) * width, summary[col], width=width, label=label, color=color, zorder=3)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(seasons)
+    ax.set_ylabel("Log loss (lower is better)", color=_INK, fontsize=10)
+    ax.set_title(title, color=_INK, fontsize=11, pad=12)
+    ax.legend(fontsize=8, frameon=False, loc="upper left")
+    fig.tight_layout()
+    fig.savefig(path, facecolor=_BG)
+    plt.close(fig)

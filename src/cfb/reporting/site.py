@@ -19,6 +19,7 @@ from cfb.evaluation.metrics import accuracy, expected_calibration_error, log_los
 from cfb.reporting.charts import (
     render_ats_record_chart,
     render_clv_chart,
+    render_model_comparison_chart,
     render_reliability_chart,
 )
 
@@ -59,6 +60,7 @@ def build_site(output_dir: str = "docs") -> None:
     total_by_season = _read_csv_if_exists("total_backtest_by_season.csv")
     spread_clv = _read_csv_if_exists("spread_clv_by_season.csv")
     total_clv = _read_csv_if_exists("total_clv_by_season.csv")
+    gbm_summary = _read_csv_if_exists("gbm_summary.csv")
 
     charts: dict[str, str] = {}
     headline: dict[str, object] = {}
@@ -119,6 +121,16 @@ def build_site(output_dir: str = "docs") -> None:
         headline["total_clv_mean"] = (
             (total_clv["mean_clv_points"] * total_clv["n_games"]).sum() / total_clv["n_games"].sum()
         )
+
+    if gbm_summary is not None:
+        render_model_comparison_chart(
+            gbm_summary, assets / "gbm_comparison.png",
+            "Log loss by season: Elo-raw vs. feature-rich GBM vs. market"
+        )
+        charts["gbm_comparison"] = "assets/gbm_comparison.png"
+        gbm_beats_elo = int((gbm_summary["gbm_logloss"] < gbm_summary["elo_raw_logloss"]).sum())
+        headline["gbm_beats_elo_seasons"] = f"{gbm_beats_elo}/{len(gbm_summary)}"
+        headline["gbm_n_games"] = int(gbm_summary["n_games"].sum())
 
     env = Environment(
         loader=FileSystemLoader(str(TEMPLATES_DIR)),
