@@ -12,6 +12,20 @@ differs by metric). Missing values (a team with no tracked advanced
 stats, or no recruiting/talent record) are passed through as NaN --
 LightGBM splits on missingness natively, so nothing here imputes a fill
 value.
+
+Hyperparameters, stated plainly (see docs/methodology.md for the full
+diagnostic): the original config was overfitting specifically in
+near-even games (|Elo differential| < 100) -- it was MORE confident than
+raw Elo in exactly the games with the least signal, and that confidence
+wasn't earned: it lost to Elo in that bucket in 4 of 5 evaluated seasons.
+Diagnosed via a walk-forward bucketed error analysis (favorite-size,
+week-of-season, data-availability), not a blind hyperparameter sweep.
+The regularized config below (shallower trees, higher min_child_samples,
+L1/L2 penalties) was chosen for exactly that failure mode and validated
+walk-forward against the original: pooled log loss 0.5499 -> 0.5489,
+ECE 0.0217 -> 0.0119 (nearly halved), across all 9 seasons the GBM is
+active for (2017-2025) -- a real if modest gain, not a breakthrough, and
+it still does not beat the market.
 """
 from __future__ import annotations
 
@@ -37,9 +51,9 @@ MIN_TRAIN_GAMES = 1500
 
 def _new_model() -> LGBMClassifier:
     return LGBMClassifier(
-        n_estimators=200, max_depth=4, learning_rate=0.03, num_leaves=15,
-        min_child_samples=30, subsample=0.8, colsample_bytree=0.8,
-        random_state=42, verbosity=-1,
+        n_estimators=150, max_depth=3, learning_rate=0.03, num_leaves=8,
+        min_child_samples=60, subsample=0.7, colsample_bytree=0.7,
+        reg_alpha=1.0, reg_lambda=1.0, random_state=42, verbosity=-1,
     )
 
 

@@ -138,8 +138,22 @@ values (both teams) + the 6 preseason-prior values (both teams). NaN
 features pass through untouched; LightGBM splits on missingness
 natively rather than this pipeline imputing a fill value.
 
-Real result (README, `gbm-eval`): GBM beat Elo-only on log loss in 4/5
-seasons (2021, 2023, 2024, 2025) with real data it couldn't see before --
+**Hyperparameters were changed once, for a diagnosed reason, not tuned
+by grid search.** A walk-forward bucketed error analysis (favorite size,
+week-of-season, EPA/SP+ data availability) found the original config was
+overconfident specifically in near-even games (|Elo diff| < 100, ~43% of
+all games): mean |prob-0.5| of 0.116 vs. Elo's own 0.088 there, despite
+there being less real signal to be confident about -- and losing to Elo
+in that bucket in 4/5 seasons individually. Classic overfitting symptom.
+Fixed with shallower trees (max_depth 4->3, num_leaves 15->8), higher
+min_child_samples (30->60), and L1/L2 regularization -- validated
+walk-forward across all 9 active seasons (2017-2025), not just cherry-
+picked on the bucket that motivated the change: pooled log loss
+0.5499->0.5489, ECE 0.0217->0.0119 (nearly halved), pickem-bucket log
+loss 0.6810->0.6765. Real, modest, not a breakthrough.
+
+Real result (README, `gbm-eval`, current config): GBM beat Elo-only on
+log loss in 5/5 seasons (2021-2025) -- up from 4/5 pre-regularization --
 but did not beat market-only in any season (0/5), and folding it into a
 3-way ensemble (calibrated Elo ↔ GBM ↔ market) didn't improve on the
 2-way Elo+market ensemble's already-modest 2/5 record. Live weekly

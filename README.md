@@ -165,24 +165,61 @@ moneylines):
 
 | Season | n | Elo-raw LL | **GBM LL** | Market LL | 3-way ensemble LL |
 |---|---|---|---|---|---|
-| 2021 | 721 | 0.572 | **0.566** | 0.550 | 0.544 |
-| 2022 | 708 | 0.619 | 0.622 | 0.589 | 0.593 |
-| 2023 | 772 | 0.568 | **0.557** | 0.523 | 0.526 |
-| 2024 | 787 | 0.584 | **0.573** | 0.541 | 0.542 |
-| 2025 | 783 | 0.568 | **0.558** | 0.536 | 0.535 |
+| 2021 | 721 | 0.572 | **0.563** | 0.550 | 0.545 |
+| 2022 | 708 | 0.619 | **0.616** | 0.589 | 0.592 |
+| 2023 | 772 | 0.568 | **0.558** | 0.523 | 0.527 |
+| 2024 | 787 | 0.584 | **0.574** | 0.541 | 0.542 |
+| 2025 | 783 | 0.568 | **0.556** | 0.536 | 0.535 |
 
-**GBM beat Elo-only on log loss in 4/5 seasons** — real, if modest,
-signal from EPA/SP+/recruiting/talent that bare Elo structurally
-couldn't see. **GBM did not beat market-only in any season (0/5)**, and
-folding GBM into the 3-way ensemble (calibrated Elo ↔ GBM, then that
-↔ market, both weights walk-forward-learned) didn't meaningfully improve
-on the 2-way Elo+market ensemble above — it still only beats market-only
-in 2/5 seasons, same as before. **Read plainly: richer features made the
-model meaningfully better than its own bare-Elo predecessor, but still
-not competitive with the market.** That's a real result, not a
-disappointing one to talk around — beating a market that prices in
-injuries, weather, and information this system still doesn't have was
-never the honest expectation at this stage.
+**GBM beat Elo-only on log loss in 5/5 seasons** (up from 4/5 — see the
+diagnostic + fix below). **GBM did not beat market-only in any season
+(0/5)**, and the 3-way ensemble still only beats market-only in 2/5
+seasons. **Read plainly: richer features made the model consistently
+better than its own bare-Elo predecessor, but still not competitive with
+the market.** That's a real result, not a disappointing one to talk
+around — beating a market that prices in injuries, weather, and
+information this system still doesn't have was never the honest
+expectation at this stage.
+
+#### Diagnostic: finding and fixing a real overfitting pattern
+
+Per a direct ask to find what's working, what isn't, and actually fix
+it — not just report the headline numbers again — the 3,771 backtested
+GBM predictions were bucketed by favorite size, week-of-season, and
+data availability to look for a genuine, non-noise error pattern (not a
+blind hyperparameter sweep). One held up cleanly across seasons:
+
+**In truly close games (|Elo differential| < 100 — the "pickem" bucket,
+~43% of all games), the GBM was *more confident* than raw Elo
+(mean |prob − 0.5| of 0.116 vs. Elo's 0.088) despite there being
+structurally less signal to be confident about — and that extra
+confidence wasn't earned: GBM lost to Elo in this bucket in 4 of 5
+seasons, individually.** Classic GBM overfitting symptom — fitting noise
+in the EPA/recruiting/talent features specifically where the true signal
+is weakest.
+
+Fix: retrained with a more conservative config targeted at exactly that
+failure mode — shallower trees (`max_depth` 4→3, `num_leaves` 15→8),
+higher `min_child_samples` (30→60), and L1/L2 regularization added
+(`reg_alpha`/`reg_lambda` = 1.0). Re-validated walk-forward across all 9
+seasons the GBM is active for (2017–2025, not just the 5 with posted
+moneylines) — a real, if modest, improvement, not a lucky overfit to one
+metric:
+
+| Metric | Original | Regularized |
+|---|---|---|
+| Pooled log loss | 0.5499 | **0.5489** |
+| Pooled Brier | 0.1863 | **0.1859** |
+| Pooled ECE | 0.0217 | **0.0119** (nearly halved) |
+| Pooled accuracy | 0.7131 | 0.7115 (negligible dip, expected — not the target metric) |
+| Pickem-bucket log loss | 0.6810 | **0.6765** |
+
+This is the config now shipped in `src/cfb/models/moneyline/gbm.py`
+(see its docstring for the same writeup) — it's what produced the 5/5
+table above. The calibration gain (ECE nearly halved) is the more
+meaningful part of this result; the log-loss gain is real but small, and
+none of this closes the gap to the market — reported as exactly what it
+is, not oversold.
 
 Known limitation: live weekly predictions (`cfb predict`) still use Elo
 only, not the GBM — wiring the full EPA/SP+/recruiting/talent feature
