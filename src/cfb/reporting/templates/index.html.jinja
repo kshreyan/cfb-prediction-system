@@ -83,7 +83,11 @@
     "Source" shows which market data won for that game: <strong>the-odds-api</strong> (real-time,
     multi-book, preferred when available) or <strong>cfbd</strong> (fallback) &mdash; never both
     averaged together, since that would blur two different snapshot times into a meaningless
-    number.</p>
+    number. Cover/over percentages are isotonic-calibrated (see the honesty banner and
+    methodology) &mdash; most cluster near 48&ndash;50% because that's what the data honestly
+    supports for typical games; real differentiation only shows up for extreme mismatches. That's
+    a finding, not a bug: forcing false confidence into the middle of the range is exactly what
+    was fixed.</p>
   <div class="table-wrap">
   <table>
     <thead>
@@ -106,13 +110,13 @@
         <td>{{ "%.1f"|format(g.predicted_total) }}</td>
         {% if g.market_spread_home is not none %}
         <td>{{ "%+.1f"|format(g.market_spread_home) }}</td>
-        <td>{{ "%.0f"|format(g.home_cover_prob * 100) }}%</td>
+        <td>{{ "%.1f"|format(g.home_cover_prob * 100) }}%</td>
         {% else %}
         <td class="na">&mdash;</td><td class="na">&mdash;</td>
         {% endif %}
         {% if g.market_total is not none %}
         <td>{{ "%.1f"|format(g.market_total) }}</td>
-        <td>{{ "%.0f"|format(g.over_prob * 100) }}%</td>
+        <td>{{ "%.1f"|format(g.over_prob * 100) }}%</td>
         {% else %}
         <td class="na">&mdash;</td><td class="na">&mdash;</td>
         {% endif %}

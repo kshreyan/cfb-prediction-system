@@ -226,58 +226,62 @@ only, not the GBM — wiring the full EPA/SP+/recruiting/talent feature
 pipeline into the live (not-yet-played-game) path is real remaining
 work, not yet done.
 
-### Spread model: real ATS backtest (the actual skill test)
+### Spread and total models: diagnosed, fixed, and re-validated
 
-Margin predicted from Elo rating differential via a walk-forward linear
-regression (refit each season on all strictly-prior seasons' games,
-skew-normal residuals for fat tails), compared against the real,
-posted consensus market spread (`python -m cfb.cli spread-eval`):
+Per a direct ask to find what's working, what isn't, and actually fix
+it, the same bucketed-diagnostic treatment applied to the GBM (see
+above) was applied to the spread and total models. It found something
+more fundamental than the GBM's overfitting: **the raw cover/over
+probability's reliability curve was badly non-monotonic** — e.g. for
+spread, predicted cover probability of 5% carried an observed cover rate
+of 40%, and predicted 94% carried an observed rate of only 58%. That's
+not a subtle miscalibration, it's close to uninformative in the middle
+of the range. Root cause: the point predictions (predicted margin/total)
+do carry *some* real signal, but disagreements with the market are
+mostly estimation noise rather than insight (consistent with the ATS/O-U
+records already being near 50%) — running that noise through a
+skew-normal CDF manufactures false precision.
 
-**Overall ATS record, FBS-only, 2015–2025: 4,023–4,151–151 (49.2%).**
+**Fix**: the same walk-forward isotonic calibration already proven for
+the moneyline model (`src/cfb/calibration/isotonic_calibrator.py`),
+applied here to cover/over probability, fit only on decided (non-push)
+games. The ATS/O-U pick now uses the calibrated probability, not the
+raw one:
 
-| Season | Record | Win % | Margin MAE |
-|---|---|---|---|
-| 2015 | 352–403–10 | 46.6% | 15.4 |
-| 2016 | 359–385–16 | 48.3% | 14.0 |
-| 2017 | 367–390–19 | 48.5% | 13.7 |
-| 2018 | 383–376–13 | 50.5% | 13.6 |
-| 2019 | 385–378–11 | 50.5% | 13.3 |
-| 2020 | 256–268–10 | 48.9% | 13.7 |
-| 2021 | 385–374–11 | 50.7% | 13.5 |
-| 2022 | 376–387–13 | 49.3% | 13.1 |
-| 2023 | 380–397–15 | 48.9% | 13.3 |
-| 2024 | 372–409–17 | 47.6% | 13.6 |
-| 2025 | 408–384–16 | 51.5% | 12.8 |
+| Metric | Spread — raw | Spread — calibrated | Total — raw | Total — calibrated |
+|---|---|---|---|---|
+| ECE (pooled) | 0.1251 | **0.0351** | 0.0792 | **0.0154** |
+| ATS/O-U record | 4,023–4,151–151 (49.2%) | **4,082–4,092–151 (49.9%)** | 4,222–4,016–87 (51.3%) | **4,196–4,042–87 (50.9%)** |
+| Mean CLV (points) | −0.002 | **+0.081** | −0.033 | **+0.255** |
 
-By favorite size: `|spread| < 14` → 49.0% (2,736–2,843–106); `|spread| ≥
-14` → 49.6% (1,287–1,308–45). Cover-probability ECE: 0.125 (pooled).
+**Read this precisely, because it's a genuinely two-sided result.**
+Calibration is a real, large, honest fix (ECE cut by 3–5×) — but it is
+*not* a newly discovered edge: ATS/O-U win rates barely moved (both
+still within a point of 50%, no season materially above the 54%
+honesty-standard trip-wire), because **isotonic regression, given a
+genuinely near-flat/non-monotonic input, correctly outputs something
+close to flat** — about 71% of calibrated cover/over probabilities now
+land within 2 points of 50%, with real differentiation concentrated in
+extreme mismatches. That's not a display bug (the live site and CLI now
+show one decimal place specifically so this doesn't look like one) — 
+it's the honest picture: **a single-feature margin model and an EWMA
+scoring-rate model mostly don't know enough to differentiate closer
+games, and now they honestly say so instead of pretending otherwise.**
 
-**No season is materially above ~54% — the honesty standard's leakage
-trip-wire never fires here.** A single-feature (Elo-diff-only) margin
-model with no efficiency, injury, weather, or market-derived features
-shows **no ATS edge**, landing at or slightly below breakeven every year.
-That is the expected, legitimate result for this stage of the build, not
-a bug — see the honesty standard at the top of this README.
+The mean-CLV improvement (both markets moved from slightly negative to
+modestly positive) is the one number here worth a second look rather
+than filing under "no change" — it's small (well under half a point per
+bet) and this is a single-cut result, not multi-season-validated proof
+of an edge, but it's a genuinely different sign than before, driven by
+the calibrated probability changing which side gets picked on a large
+fraction of games (roughly half, across both markets). Worth continued
+monitoring, not yet a claim.
 
-### Total model: real O/U backtest
+By favorite size (spread): `|spread| < 14` → 49.4% (2,754–2,825–106);
+`|spread| ≥ 14` → 51.2% (1,328–1,267–45).
 
-Team scoring-rate EWMA (attack/defense blend, leak-free, offseason-
-regressed) vs. the real posted consensus total, skew-normal residuals
-(`python -m cfb.cli total-eval`):
-
-**Overall O/U record, FBS-only, 2015–2025: 4,222–4,016–87 (51.3%).**
-
-Per-season win rates range 47.6%–54.8%; two seasons (2020: 54.8%, n=529;
-2023: 54.7%, n=783) individually cross the honesty standard's 54%
-trip-wire. Investigated, not celebrated: with 11 independent seasons
-tested, 1–2 crossing p<0.05 by chance is expected under the null, both
-values are only marginally significant (binomial p≈0.01–0.03, not
-overwhelming), and there is no plausible leakage channel — the total
-prediction is generated entirely from each team's own EWMA scoring state
-and a residual distribution fit only on strictly prior seasons, with
-market data entering nowhere upstream of the final O/U comparison. The
-pooled 51.3% across all 9,132 decided games is the number that matters,
-and it shows no real edge. Over-probability ECE: 0.079 (pooled).
+Reproduce with `python -m cfb.cli spread-eval` / `total-eval` — both now
+print raw-vs-calibrated ECE explicitly.
 
 ### CLV: the decisive benchmark
 
@@ -296,23 +300,25 @@ opening+closing coverage).
 moneyline field, only opening spread/total, so a moneyline CLV number
 would have to be fabricated to fill that gap. It isn't.
 
-| Market | Games | Mean CLV (points) | % picks with positive CLV |
+| Market | Games | Mean CLV (points) — pre-calibration | Mean CLV (points) — post-calibration |
 |---|---|---|---|
-| Spread | 3,937 | **−0.002** | 41.2% |
-| Total | 3,942 | **−0.033** | 44.3% |
+| Spread | 3,937 | −0.002 | **+0.081** |
+| Total | 3,942 | −0.033 | **+0.255** |
 
-**Both are indistinguishable from zero — no demonstrated CLV edge on
-either market.** One nuance worth flagging rather than hiding: the
-"% positive" figures look worse than the near-zero means suggest, because
-~13% of spread lines (and a comparable share of totals) don't move at all
-between open and close, and a strict `> 0` threshold counts every
-zero-movement game as "not positive." The pooled **mean** CLV — which
-does credit zero-movement games as exactly neutral rather than as a loss
-— is the more honest single number, and it says the same thing both
-markets' ATS/O-U records already said: **this system currently shows no
-measurable edge over the market, on any metric, on any of the three
-targets.** That is the correct, current, and complete answer to this
-project's own acceptance criteria — not a hedge.
+**Both moved from ~zero to modestly positive after the isotonic
+calibration fix documented above** (the CLV pick now uses the calibrated
+probability too) — real, but small (well under a point per bet, on a
+single historical cut, not yet re-validated on a fresh season) and not
+yet a claim of a demonstrated edge. The pooled **mean** CLV — which
+credits zero-movement games as exactly neutral rather than as a loss —
+remains the more honest single number than "% positive," since roughly
+13% of lines don't move between open and close at all. Read together
+with the ATS/O-U records above (both still within a point of 50%):
+**this system shows no large, reliably demonstrated edge over the
+market on any of the three targets, but the calibration fix measurably
+improved probability quality and CLV sign on both spread and total.**
+That's the correct, current, complete answer — better than the last
+version of this section, not hedged into sounding bigger than it is.
 
 ## Credentials
 

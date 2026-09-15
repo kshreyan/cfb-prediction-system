@@ -389,6 +389,10 @@ def spread_eval(start_season: int, end_season: int, refresh: bool) -> None:
     import numpy as np
     import pandas as pd
 
+    from cfb.calibration.isotonic_calibrator import (
+        walk_forward_isotonic_apply,
+        walk_forward_isotonic_calibrate,
+    )
     from cfb.data.cache import fetch_lines_for_seasons
     from cfb.data.lines_loader import (
         consensus_closing_lines,
@@ -435,7 +439,20 @@ def spread_eval(start_season: int, end_season: int, refresh: bool) -> None:
     home_ats_margin = df["home_margin"] + df["market_spread_home"]
     df["push"] = np.isclose(home_ats_margin, 0.0)
     df["home_covered"] = home_ats_margin > 0
-    df["model_picked_home"] = df["home_cover_prob"] > 0.5
+
+    # Diagnostic (see README/methodology): the raw cover_prob's reliability
+    # curve is badly miscalibrated -- extreme predicted probabilities carry
+    # far less real signal than they claim. Isotonic-calibrate it walk-
+    # forward, fit only on decided (non-push) games, and use the calibrated
+    # probability -- not the raw one -- for the actual pick from here on.
+    calib_fit_df = df[~df["push"]].copy()
+    calib_fit_df["home_covered_int"] = calib_fit_df["home_covered"].astype(int)
+    df["home_cover_prob_calibrated"] = df["home_cover_prob"]
+    df.loc[~df["push"], "home_cover_prob_calibrated"] = walk_forward_isotonic_calibrate(
+        calib_fit_df, "home_cover_prob", "home_covered_int"
+    )
+
+    df["model_picked_home"] = df["home_cover_prob_calibrated"] > 0.5
     df["pick_correct"] = df["model_picked_home"] == df["home_covered"]
 
     def _ats_record(data: pd.DataFrame) -> tuple[int, int, int]:
@@ -473,10 +490,16 @@ def spread_eval(start_season: int, end_season: int, refresh: bool) -> None:
         wp = w / (w + l) if (w + l) else float("nan")
         click.echo(f"{label}: {w}-{l}-{p} ({wp:.1%})")
 
-    cover_ece = expected_calibration_error(
+    cover_ece_raw = expected_calibration_error(
         fbs_only["home_covered"].astype(int).to_numpy(), fbs_only["home_cover_prob"].to_numpy()
     )
-    click.echo(f"\nCover-probability ECE (FBS-only, all seasons pooled): {cover_ece:.4f}")
+    cover_ece_calibrated = expected_calibration_error(
+        fbs_only["home_covered"].astype(int).to_numpy(),
+        fbs_only["home_cover_prob_calibrated"].to_numpy(),
+    )
+    click.echo(f"\nCover-probability ECE (FBS-only, pooled) -- raw: {cover_ece_raw:.4f}  "
+               f"isotonic-calibrated: {cover_ece_calibrated:.4f}")
+    click.echo("(ATS record above already uses the calibrated probability for the pick.)")
 
     click.echo("\n=== CLV (spread): pick made at the OPENING line, held to close ===")
     has_open = fbs_only[fbs_only["n_books_open_spread"].fillna(0) > 0].copy()
@@ -490,7 +513,11 @@ def spread_eval(start_season: int, end_season: int, refresh: bool) -> None:
             ),
             axis=1,
         )
-        has_open["clv_picked_home"] = has_open["open_cover_prob_home"] > 0.5
+        has_open["home_covered_int"] = has_open["home_covered"].astype(int)
+        has_open["open_cover_prob_calibrated"] = walk_forward_isotonic_apply(
+            has_open, "home_cover_prob", "home_covered_int", "open_cover_prob_home"
+        )
+        has_open["clv_picked_home"] = has_open["open_cover_prob_calibrated"] > 0.5
         has_open["spread_clv_points"] = has_open.apply(
             lambda r: spread_clv_points(r["clv_picked_home"], r["open_spread_home"],
                                          r["market_spread_home"]),
@@ -526,6 +553,10 @@ def total_eval(start_season: int, end_season: int, refresh: bool) -> None:
     import numpy as np
     import pandas as pd
 
+    from cfb.calibration.isotonic_calibrator import (
+        walk_forward_isotonic_apply,
+        walk_forward_isotonic_calibrate,
+    )
     from cfb.data.cache import fetch_lines_for_seasons, fetch_seasons
     from cfb.data.lines_loader import (
         consensus_closing_lines,
@@ -575,7 +606,17 @@ def total_eval(start_season: int, end_season: int, refresh: bool) -> None:
     )
     df["push"] = np.isclose(df["actual_total"], df["market_total"])
     df["went_over"] = df["actual_total"] > df["market_total"]
-    df["model_picked_over"] = df["over_prob"] > 0.5
+
+    # Diagnostic (see README/methodology): raw over_prob is also
+    # miscalibrated -- same fix as the spread model, same discipline.
+    calib_fit_df = df[~df["push"]].copy()
+    calib_fit_df["went_over_int"] = calib_fit_df["went_over"].astype(int)
+    df["over_prob_calibrated"] = df["over_prob"]
+    df.loc[~df["push"], "over_prob_calibrated"] = walk_forward_isotonic_calibrate(
+        calib_fit_df, "over_prob", "went_over_int"
+    )
+
+    df["model_picked_over"] = df["over_prob_calibrated"] > 0.5
     df["pick_correct"] = df["model_picked_over"] == df["went_over"]
 
     def _ou_record(data: pd.DataFrame) -> tuple[int, int, int]:
@@ -605,10 +646,16 @@ def total_eval(start_season: int, end_season: int, refresh: bool) -> None:
     season_summary = pd.DataFrame(rows)
     click.echo(season_summary.to_string(index=False))
 
-    ou_ece = expected_calibration_error(
+    ou_ece_raw = expected_calibration_error(
         fbs_only["went_over"].astype(int).to_numpy(), fbs_only["over_prob"].to_numpy()
     )
-    click.echo(f"\nOver-probability ECE (FBS-only, all seasons pooled): {ou_ece:.4f}")
+    ou_ece_calibrated = expected_calibration_error(
+        fbs_only["went_over"].astype(int).to_numpy(),
+        fbs_only["over_prob_calibrated"].to_numpy(),
+    )
+    click.echo(f"\nOver-probability ECE (FBS-only, pooled) -- raw: {ou_ece_raw:.4f}  "
+               f"isotonic-calibrated: {ou_ece_calibrated:.4f}")
+    click.echo("(O/U record above already uses the calibrated probability for the pick.)")
 
     click.echo("\n=== CLV (total): pick made at the OPENING line, held to close ===")
     has_open = fbs_only[fbs_only["n_books_open_total"].fillna(0) > 0].copy()
@@ -620,7 +667,11 @@ def total_eval(start_season: int, end_season: int, refresh: bool) -> None:
                                         r["resid_scale"], r["open_total"]),
             axis=1,
         )
-        has_open["clv_picked_over"] = has_open["open_over_prob"] > 0.5
+        has_open["went_over_int"] = has_open["went_over"].astype(int)
+        has_open["open_over_prob_calibrated"] = walk_forward_isotonic_apply(
+            has_open, "over_prob", "went_over_int", "open_over_prob"
+        )
+        has_open["clv_picked_over"] = has_open["open_over_prob_calibrated"] > 0.5
         has_open["total_clv_points"] = has_open.apply(
             lambda r: total_clv_points(r["clv_picked_over"], r["open_total"], r["market_total"]),
             axis=1,
@@ -683,9 +734,9 @@ def predict(season: int | None, week: int | None, history_start_season: int,
         market_bits = []
         if g["market_spread_home"] is not None:
             market_bits.append(f"spread {g['market_spread_home']:+.1f} "
-                                f"(cover {g['home_cover_prob']:.0%})")
+                                f"(cover {g['home_cover_prob']:.1%})")
         if g["market_total"] is not None:
-            market_bits.append(f"total {g['market_total']:.1f} (over {g['over_prob']:.0%})")
+            market_bits.append(f"total {g['market_total']:.1f} (over {g['over_prob']:.1%})")
         if g["market_home_win_prob"] is not None:
             market_bits.append(f"mkt ML {g['market_home_win_prob']:.0%}")
         market_str = " | ".join(market_bits) if market_bits else "no market line posted"

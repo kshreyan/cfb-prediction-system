@@ -7,6 +7,7 @@ import pandas as pd
 
 from cfb.calibration.isotonic_calibrator import (
     MIN_TRAIN_GAMES,
+    walk_forward_isotonic_apply,
     walk_forward_isotonic_calibrate,
 )
 from cfb.evaluation.metrics import expected_calibration_error
@@ -52,3 +53,16 @@ def test_calibrated_probs_stay_in_unit_interval():
     df = _overconfident_synthetic_df(n_per_season=400, seasons=[2020, 2021])
     calibrated = walk_forward_isotonic_calibrate(df, "raw_p", "outcome")
     assert np.all(calibrated >= 0.0) and np.all(calibrated <= 1.0)
+
+
+def test_apply_maps_a_different_column_through_the_same_fitted_calibrator():
+    df = _overconfident_synthetic_df(n_per_season=400, seasons=[2020, 2021])
+    # A second, related probability column (e.g. computed against a
+    # different threshold from the same underlying model) should get
+    # calibrated using the mapping FIT on raw_p/outcome.
+    df["related_p"] = df["raw_p"]
+    calibrated_self = walk_forward_isotonic_calibrate(df, "raw_p", "outcome")
+    calibrated_applied = walk_forward_isotonic_apply(df, "raw_p", "outcome", "related_p")
+    # Since related_p == raw_p here, applying the same fit to it must
+    # reproduce exactly what direct self-calibration produces.
+    assert np.allclose(calibrated_self, calibrated_applied)

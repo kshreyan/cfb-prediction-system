@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 
 from cfb.calibration.isotonic_calibrator import fit_calibrator_for_season
-from cfb.data.cache import fetch_seasons
+from cfb.data.cache import fetch_lines_for_seasons, fetch_seasons
 from cfb.data.cfbd_client import CfbdClient
 from cfb.data.lines_loader import consensus_closing_lines, parse_lines
 from cfb.data.loaders import games_from_cfbd_dicts
@@ -43,6 +43,7 @@ from cfb.models.spread.margin_model import (
 from cfb.models.total.scoreline_engine import (
     build_scoreline_engine,
     fit_total_residual_params,
+    fit_total_residuals,
     over_probability,
     run_total_backtest,
 )
@@ -70,8 +71,10 @@ class GamePrediction:
     market_spread_home: float | None
     market_total: float | None
     market_home_win_prob: float | None
-    home_cover_prob: float | None
-    over_prob: float | None
+    home_cover_prob: float | None  # isotonic-calibrated when cover_calibration_available
+    over_prob: float | None        # isotonic-calibrated when over_calibration_available
+    cover_calibration_available: bool
+    over_calibration_available: bool
     spread_edge_points: float | None  # predicted_margin - (-market_spread_home)
     total_edge_points: float | None   # predicted_total - market_total
     moneyline_edge_prob: float | None  # model - market win prob
@@ -161,6 +164,48 @@ def generate_weekly_predictions(season: int, week: int | None = None,
     fbs_elo_df["home_won_int"] = fbs_elo_df["home_won"].astype(int)
     calibrator = fit_calibrator_for_season(fbs_elo_df, "home_win_prob", "home_won_int", season)
 
+    # Cover/over probability calibrators: same diagnosed-and-fixed issue as
+    # the backtest CLI commands (raw cover/over probabilities are badly
+    # miscalibrated -- see README/methodology) -- fit on the full historical
+    # margin/total predictions joined with REAL historical closing lines,
+    # walk-forward, strictly-prior-seasons-only, same as everything else.
+    raw_history_lines = fetch_lines_for_seasons(client, history_seasons, force_refresh=refresh)
+    historical_consensus = consensus_closing_lines(parse_lines(raw_history_lines))
+
+    margin_fbs = margin_df[margin_df["is_fbs_vs_fbs"]].merge(
+        historical_consensus[["game_id", "market_spread_home", "n_books_spread"]],
+        on="game_id", how="inner",
+    )
+    margin_fbs = margin_fbs[margin_fbs["n_books_spread"] > 0].copy()
+    margin_fbs["home_cover_prob"] = margin_fbs.apply(
+        lambda r: home_cover_probability(r["predicted_margin"], r["resid_a"], r["resid_loc"],
+                                          r["resid_scale"], r["market_spread_home"]),
+        axis=1,
+    )
+    home_ats_margin = margin_fbs["home_margin"] + margin_fbs["market_spread_home"]
+    margin_fbs = margin_fbs[~np.isclose(home_ats_margin, 0.0)].copy()  # exclude pushes from fit
+    margin_fbs["home_covered_int"] = (
+        margin_fbs["home_margin"] + margin_fbs["market_spread_home"] > 0
+    ).astype(int)
+    cover_calibrator = fit_calibrator_for_season(
+        margin_fbs, "home_cover_prob", "home_covered_int", season
+    )
+
+    total_df_with_resid = fit_total_residuals(total_df)
+    total_fbs = total_df_with_resid[total_df_with_resid["is_fbs_vs_fbs"]].merge(
+        historical_consensus[["game_id", "market_total", "n_books_total"]],
+        on="game_id", how="inner",
+    )
+    total_fbs = total_fbs[total_fbs["n_books_total"] > 0].copy()
+    total_fbs["over_prob"] = total_fbs.apply(
+        lambda r: over_probability(r["predicted_total"], r["resid_a"], r["resid_loc"],
+                                    r["resid_scale"], r["market_total"]),
+        axis=1,
+    )
+    total_fbs = total_fbs[~np.isclose(total_fbs["actual_total"], total_fbs["market_total"])].copy()
+    total_fbs["went_over_int"] = (total_fbs["actual_total"] > total_fbs["market_total"]).astype(int)
+    over_calibrator = fit_calibrator_for_season(total_fbs, "over_prob", "went_over_int", season)
+
     raw_upcoming = client.fetch_games(season=season, week=target_week,
                                        season_type="regular", classification="fbs")
     upcoming = [rg for rg in raw_upcoming if not rg["completed"]]
@@ -214,17 +259,25 @@ def generate_weekly_predictions(season: int, week: int | None = None,
 
             if n_books_spread > 0:
                 market_spread_home = float(market_row["market_spread_home"])
-                home_cover_prob = home_cover_probability(
+                raw_cover_prob = home_cover_probability(
                     predicted_margin, margin_params["resid_a"], margin_params["resid_loc"],
                     margin_params["resid_scale"], market_spread_home,
+                )
+                home_cover_prob = (
+                    float(cover_calibrator.predict([raw_cover_prob])[0])
+                    if cover_calibrator is not None else raw_cover_prob
                 )
                 spread_edge = predicted_margin - (-market_spread_home)
 
             if n_books_total > 0:
                 market_total = float(market_row["market_total"])
-                over_prob = over_probability(
+                raw_over_prob = over_probability(
                     predicted_total, total_params["resid_a"], total_params["resid_loc"],
                     total_params["resid_scale"], market_total,
+                )
+                over_prob = (
+                    float(over_calibrator.predict([raw_over_prob])[0])
+                    if over_calibrator is not None else raw_over_prob
                 )
                 total_edge = predicted_total - market_total
 
@@ -244,6 +297,8 @@ def generate_weekly_predictions(season: int, week: int | None = None,
             market_spread_home=market_spread_home, market_total=market_total,
             market_home_win_prob=market_home_win_prob,
             home_cover_prob=home_cover_prob, over_prob=over_prob,
+            cover_calibration_available=cover_calibrator is not None,
+            over_calibration_available=over_calibrator is not None,
             spread_edge_points=spread_edge, total_edge_points=total_edge,
             moneyline_edge_prob=ml_edge,
             n_books_spread=n_books_spread, n_books_total=n_books_total, n_books_ml=n_books_ml,

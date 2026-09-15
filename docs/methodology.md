@@ -50,6 +50,21 @@
   symmetric residual prior, rather than fitting on too little data.
 - **Cover probability**: `P(home covers) = 1 - skewnorm.cdf(-spread_home
   - predicted_margin; a, loc, scale)`.
+- **Cover-probability calibration, diagnosed and fixed**: the raw
+  cover_prob's reliability curve was badly non-monotonic (predicted 5%
+  carried an observed 40% cover rate; predicted 94% carried an observed
+  58%). Root cause: predicted-margin disagreements with the market are
+  mostly estimation noise, not insight, and running that noise through a
+  skew-normal CDF manufactured false precision. Fixed with the same
+  walk-forward isotonic calibration already proven for moneyline (fit
+  only on decided/non-push games); ATS pick now uses the calibrated
+  probability. ECE: 0.1251 -> 0.0351. ATS record barely moved (49.2% ->
+  49.9%) -- correctly, since calibration reveals miscalibration, it
+  doesn't invent signal. About 71% of calibrated cover probabilities now
+  land within 2 points of 50%, which is the honest picture (real
+  differentiation only for extreme mismatches), not a bug -- the CLI and
+  site both show one decimal place specifically so this doesn't read as
+  a stuck-at-50% display error.
 
 ## Total model (`src/cfb/models/total/scoreline_engine.py`)
 
@@ -67,6 +82,11 @@ same discipline as the spread model. A genuine discrete scoreline
 simulation (e.g. Negative-Binomial per team, convolved for the total) is
 a real future enhancement, not implemented here.
 
+Same over-probability calibration diagnosis and fix as the spread
+model's cover probability (see above): raw ECE 0.0792 -> calibrated
+0.0154, O/U record barely moved (51.3% -> 50.9%, both near breakeven),
+~71% of calibrated probabilities land within 2 points of 50%.
+
 ## Calibration (`src/cfb/calibration/isotonic_calibrator.py`)
 
 Walk-forward isotonic regression (`sklearn.isotonic.IsotonicRegression`),
@@ -75,6 +95,12 @@ Below `MIN_TRAIN_GAMES` (300) prior rows, the raw probability passes
 through uncalibrated rather than fitting isotonic regression on too
 little data (isotonic regression, being non-parametric, overfits small
 samples more readily than the spread/total models' 1-D linear/EWMA fits).
+`walk_forward_isotonic_apply(df, fit_col, outcome_col, apply_col)`
+generalizes this: fit the mapping on one probability column, apply it to
+a different one -- used to calibrate opening-line cover/over probability
+for CLV using the mapping fit on closing-line cover/over probability,
+since both come from the same underlying model distribution and only
+the threshold (which line) differs.
 
 ## Ensemble (`src/cfb/ensemble/blend.py`)
 
@@ -99,9 +125,12 @@ CFBD's real opening+closing spread/total snapshots (`consensus_opening_lines`
 / `consensus_closing_lines` in `src/cfb/data/lines_loader.py`). Moneyline
 CLV is not computed: CFBD's free tier has no opening-moneyline field, so
 there's nothing to measure movement against without fabricating one.
-Real result (README): pooled mean CLV is ≈0 for both spread (−0.002 pts)
-and total (−0.033 pts) — no demonstrated edge, consistent with the
-ATS/O-U records.
+Real result (README): after the cover/over calibration fix above, pooled
+mean CLV moved from ≈0 to modestly positive for both spread (−0.002 ->
++0.081 pts) and total (−0.033 -> +0.255 pts) -- the CLV pick now uses
+the calibrated probability too. Small, single-cut, not yet a
+demonstrated multi-season edge, but a real, consistent-sign shift worth
+tracking as more seasons accumulate.
 
 ## EPA/success-rate feature engine (`src/cfb/features/epa_engine.py`)
 
